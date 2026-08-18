@@ -156,6 +156,11 @@
   .invite-link-box{display:flex; gap:8px; align-items:center; background:var(--bg-alt); border:1px solid var(--panel-line); border-radius:5px; padding:10px 12px; font-family:'IBM Plex Mono',monospace; font-size:13px; margin-bottom:14px; flex-wrap:wrap;}
   .invite-link-box code{flex:1; min-width:160px; word-break:break-all; color:var(--gold-bright);}
   .owner-tag{font-size:11px; color:var(--gold-bright); font-family:'IBM Plex Mono',monospace; margin-left:6px;}
+  .pw-field{position:relative;}
+  .pw-field input{padding-right:38px;}
+  .pw-toggle{position:absolute; right:4px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:16px; padding:6px; line-height:1; color:var(--muted); border-radius:4px;}
+  .pw-toggle:hover{color:var(--chalk);}
+  .pw-toggle.active{color:var(--gold-bright);}
 </style>
 </head>
 <body class="field-lines">
@@ -735,6 +740,25 @@ sb.auth.onAuthStateChange((event, sess)=>{
   onAuthChanged();
 });
 
+// ---------- reusable show/hide toggle for password fields ----------
+function passwordFieldHtml(inputId, placeholder){
+  return `<div class="pw-field">
+    <input type="password" id="${inputId}" placeholder="${placeholder}">
+    <button type="button" class="pw-toggle" id="${inputId}Toggle" aria-label="Show password" tabindex="-1">👁</button>
+  </div>`;
+}
+function wirePasswordToggle(inputId){
+  const input = document.getElementById(inputId);
+  const btn = document.getElementById(inputId+'Toggle');
+  if(!input || !btn) return;
+  btn.onclick = ()=>{
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    btn.classList.toggle('active', !showing);
+    btn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+  };
+}
+
 function renderPasswordRecovery(){
   document.getElementById('appShell').style.display = 'none';
   document.getElementById('altScreen').innerHTML = `
@@ -743,11 +767,12 @@ function renderPasswordRecovery(){
       <h1 class="brand" style="text-align:center;font-size:44px;">SET A NEW <span>PASSWORD</span></h1>
       <div class="panel">
         <div class="sub">Choose a new password for ${esc(session?.user?.email||'your account')}.</div>
-        <div class="field"><label>New password</label><input type="password" id="recoveryPassword" placeholder="New password"></div>
+        <div class="field"><label>New password</label>${passwordFieldHtml('recoveryPassword','New password')}</div>
         <button class="btn" id="recoverySubmit" style="width:100%;">Set Password &amp; Continue</button>
         <div id="recoveryMsg" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
       </div>
     </div>`;
+  wirePasswordToggle('recoveryPassword');
   document.getElementById('recoverySubmit').onclick = async ()=>{
     const password = document.getElementById('recoveryPassword').value;
     const msg = document.getElementById('recoveryMsg');
@@ -799,7 +824,7 @@ function authFormHtml(idPrefix){
     </div>
     <div class="row">
       <div class="field"><label>Email</label><input type="text" id="${idPrefix}Email" placeholder="you@example.com"></div>
-      <div class="field"><label>Password</label><input type="password" id="${idPrefix}Password" placeholder="Password"></div>
+      <div class="field"><label>Password</label>${passwordFieldHtml(idPrefix+'Password','Password')}</div>
     </div>
     <button class="btn" id="${idPrefix}Submit" style="width:100%;">Log In</button>
     <div style="text-align:right;margin-top:6px;"><a href="#" id="${idPrefix}ForgotLink" style="font-size:12px;color:var(--muted);">Forgot password?</a></div>
@@ -815,6 +840,7 @@ function wireAuthForm(idPrefix, onSuccess){
   const msg = document.getElementById(idPrefix+'Msg');
   const loginModeBtn = document.getElementById(idPrefix+'ModeLogin');
   const signupModeBtn = document.getElementById(idPrefix+'ModeSignup');
+  wirePasswordToggle(idPrefix+'Password');
 
   function setMode(m){
     mode = m;
