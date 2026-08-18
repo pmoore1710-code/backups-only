@@ -388,6 +388,12 @@
 </div>
 
 <script>
+// Captured before anything else runs (including client creation) so we know for certain
+// whether this page load came from a password-recovery email link, regardless of which
+// auth event name the SDK ends up firing for it (that varies by flow type/version) and
+// regardless of whether the SDK strips the URL before our own code gets to look at it.
+const CAME_FROM_RECOVERY_LINK = /type=recovery/.test(location.hash) || /type=recovery/.test(location.search);
+
 // ---------- Supabase config ----------
 // 1. Create a free project at https://supabase.com
 // 2. In the SQL Editor, run the schema from supabase-schema.sql (included alongside this file)
@@ -758,8 +764,25 @@ function renderPasswordRecovery(){
 
 async function boot(){
   const { data } = await sb.auth.getSession();
-  if(inPasswordRecovery){ appReady = true; return; } // recovery screen already up — don't clobber it
   session = data.session;
+  if(CAME_FROM_RECOVERY_LINK || inPasswordRecovery){
+    if(!session){
+      // Belt-and-suspenders: detectSessionInUrl should already have handled this, but if
+      // the link used a ?code= (PKCE-style) param and that auto-detection didn't fire for
+      // any reason, exchange it explicitly rather than showing a broken recovery screen.
+      const code = new URLSearchParams(location.search).get('code');
+      if(code){
+        try{
+          const { data: exch } = await sb.auth.exchangeCodeForSession(code);
+          session = exch?.session || session;
+        }catch(e){ console.error('recovery code exchange failed', e); }
+      }
+    }
+    inPasswordRecovery = true;
+    renderPasswordRecovery();
+    appReady = true;
+    return;
+  }
   LEAGUE_ID = new URLSearchParams(location.search).get('league');
   if(!LEAGUE_ID){ appReady = true; renderLanding(); return; }
   await enterLeague();
