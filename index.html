@@ -965,11 +965,13 @@ async function computeHomeStats(){
   return { latestWeek, multiLeague, kevList, topQB: top3ByPos('QB'), topK: top3ByPos('K'), topDEF: top3ByPos('DEF') };
 }
 
+const KEV_HEADING = `Kev of the Week <span style="font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:0; text-transform:none; color:var(--muted); font-weight:400;">— this week's worst performing team</span>`;
+
 async function homeStatsHtml(){
   const stats = await computeHomeStats();
   if(!stats){
     return `
-      <div class="panel"><h2>Kev of the Week</h2><div class="empty">No scores recorded yet — check back after the first week.</div></div>
+      <div class="panel"><h2>${KEV_HEADING}</h2><div class="empty">No scores recorded yet — check back after the first week.</div></div>
       <div class="panel"><h2>Top Performers of the Week</h2><div class="empty">No scores recorded yet — check back after the first week.</div></div>`;
   }
   const { latestWeek, multiLeague, kevList, topQB, topK, topDEF } = stats;
@@ -982,7 +984,7 @@ async function homeStatsHtml(){
     : '<div class="empty">No data.</div>';
   return `
     <div class="panel">
-      <h2>Kev of the Week</h2>
+      <h2>${KEV_HEADING}</h2>
       <div class="sub">${multiLeague ? `Bottom 3 team scores of week ${esc(String(latestWeek))}, across all leagues` : `Lowest team score of week ${esc(String(latestWeek))}`}</div>
       <ul class="plain">${kevRows}</ul>
     </div>
