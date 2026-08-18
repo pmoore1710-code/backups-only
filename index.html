@@ -146,10 +146,23 @@
   .view-toggle{display:flex; gap:6px; margin-bottom:14px;}
   .view-toggle button.active{background:var(--gold); color:#16241C; border-color:var(--gold);}
   .paused-banner{background:rgba(92,135,174,0.18); border:1px solid var(--blue); color:#bcd3e6; padding:10px 14px; border-radius:5px; font-size:13px; margin-bottom:14px; text-align:center; font-family:'IBM Plex Mono',monospace; letter-spacing:.05em; text-transform:uppercase;}
+
+  .landing-wrap{max-width:560px; margin:60px auto; padding:0 20px;}
+  .badge{display:inline-block; font-family:'IBM Plex Mono',monospace; font-size:10px; letter-spacing:.06em; text-transform:uppercase; padding:3px 9px; border-radius:20px; border:1px solid var(--panel-line);}
+  .badge.pending{color:var(--gold-bright); border-color:var(--gold);}
+  .badge.joined{color:#8fd19e; border-color:#3f7a50;}
+  .member-row{display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--panel-line); gap:10px; flex-wrap:wrap;}
+  .member-row:last-child{border-bottom:none;}
+  .invite-link-box{display:flex; gap:8px; align-items:center; background:var(--bg-alt); border:1px solid var(--panel-line); border-radius:5px; padding:10px 12px; font-family:'IBM Plex Mono',monospace; font-size:13px; margin-bottom:14px; flex-wrap:wrap;}
+  .invite-link-box code{flex:1; min-width:160px; word-break:break-all; color:var(--gold-bright);}
+  .owner-tag{font-size:11px; color:var(--gold-bright); font-family:'IBM Plex Mono',monospace; margin-left:6px;}
 </style>
 </head>
 <body class="field-lines">
 
+<div id="altScreen"></div>
+
+<div id="appShell" style="display:none;">
 <header>
   <div class="eyebrow">A LEAGUE FOR THE GUYS WHO HOLD THE CLIPBOARD</div>
   <h1 class="brand">BACKUPS ONLY <span>LEAGUE</span></h1>
@@ -168,6 +181,7 @@
   <button data-tab="rosters">Rosters</button>
   <button data-tab="standings">Standings</button>
   <button data-tab="chat">Trash Talk</button>
+  <button data-tab="commissioner" id="commissionerNavBtn" style="display:none;">Commissioner</button>
 </nav>
 
 <main>
@@ -187,18 +201,18 @@
 
     <div class="panel">
       <h2>Teams</h2>
-      <div class="sub">Add every owner in the league before the draft starts.</div>
+      <div class="sub">Friends join their own team by logging in via the league link (see the Commissioner tab for invites). If someone would rather not make an account, you can add a placeholder team for them here.</div>
       <div class="row">
         <div class="field"><label>Team name</label><input type="text" id="teamName" placeholder="The Clipboard Crew"></div>
-        <div class="field"><label>Owner</label><input type="text" id="ownerName" placeholder="Pete"></div>
+        <div class="field"><label>Owner (display name)</label><input type="text" id="ownerName" placeholder="Pete"></div>
       </div>
-      <button class="btn" id="addTeam">Add Team</button>
+      <button class="btn" id="addTeam">Add Placeholder Team</button>
       <ul class="plain" id="teamList" style="margin-top:14px;"></ul>
     </div>
 
     <div class="panel">
       <h2>Draft Settings</h2>
-      <div class="sub">Schedule the live draft and configure how it runs. Locked like Rules and Scoring — enter the commissioner PIN above to edit.</div>
+      <div class="sub">Schedule the live draft and configure how it runs. Locked like Rules and Scoring — log in as the commissioner above to edit.</div>
       <div class="row">
         <div class="field"><label>Draft date &amp; time</label><input type="datetime-local" id="draftScheduledAt"></div>
         <div class="field"><label>Draft type</label>
@@ -364,45 +378,58 @@
     </div>
   </section>
 
-  <div class="footer-note">SHARED LEAGUE DATA — VISIBLE TO EVERYONE WHO OPENS THIS PAGE</div>
+  <!-- COMMISSIONER -->
+  <section class="tab" id="tab-commissioner">
+    <div id="commissionerArea"></div>
+  </section>
+
+  <div class="footer-note">SHARED LEAGUE DATA — VISIBLE TO EVERYONE IN THIS LEAGUE</div>
 </main>
+</div>
 
 <script>
 // ---------- Supabase config ----------
 // 1. Create a free project at https://supabase.com
 // 2. In the SQL Editor, run the schema from supabase-schema.sql (included alongside this file)
 // 3. Go to Project Settings -> API, copy your Project URL and "anon public" key below
+// 4. Authentication -> Providers -> make sure Email is enabled (magic link login)
+// 5. Authentication -> URL Configuration -> add your site's URL to Redirect URLs
 const SUPABASE_URL = 'https://upldafneeezkwevnbagv.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwbGRhZm5lZWV6a3dldm5iYWd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcwMTA3OTYsImV4cCI6MjEwMjU4Njc5Nn0.0rpA8XcxhzQOD1XNOCVGGZuV-jzFpSgFfyPjg6UEnUM';
 
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// ---------- storage helpers (Supabase-backed, mirrors the original window.storage API) ----------
-async function sGet(key, fallback){
+// ---------- legacy read-only helper (only used to one-time import an old single-league
+// site's data into a newly created league; the app never writes to league_kv anymore) ----------
+async function legacyGet(key, fallback){
   try{
-    const { data, error } = await sb
-      .from('league_kv')
-      .select('value')
-      .eq('key', key)
-      .maybeSingle();
-    if(error || !data) return fallback;
+    const { data } = await sb.from('league_kv').select('value').eq('key', key).maybeSingle();
+    if(!data) return fallback;
     return JSON.parse(data.value);
-  }catch(e){ console.error('storage get failed', key, e); return fallback; }
+  }catch(e){ return fallback; }
 }
-async function sSet(key, val){
+async function legacyHasData(){
   try{
-    const { error } = await sb
-      .from('league_kv')
-      .upsert({ key, value: JSON.stringify(val), updated_at: new Date().toISOString() });
-    if(error) console.error('storage set failed', key, error);
-  }catch(e){ console.error('storage set failed', key, e); }
+    const { data } = await sb.from('league_kv').select('key').limit(1);
+    return !!(data && data.length);
+  }catch(e){ return false; }
 }
+
+// ---------- auth / league-routing state ----------
+let session = null;         // Supabase Auth session, or null
+let appReady = false;       // true once the initial boot sequence has finished once
+let clockLoopStarted = false;
+let LEAGUE_ID = null;       // league code from ?league=
+let leagueRow = null;       // raw `leagues` row
+let myTeam = null;          // the logged-in user's own team in this league, if any
+let unlocked = false;       // true when signed in as this league's commissioner
+let members = [];           // league_members rows (commissioner-only)
 
 // ---------- state ----------
 let league = { rules:'', teams:[], rosterSize:8, draftOrder:[], draftStarted:false, currentPick:0, picks:[], numQB:2, numDEF:1, numK:1, numSuperflex:1, benchSize:3,
   draftScheduledAt:null, draftType:'snake', pickTimeSeconds:90, draftOrderMethod:'random', manualOrder:[], autopickEnabled:true,
-  draftPaused:false, currentPickDeadline:null, pausedRemainingMs:null };
-let players = []; // {id,name,pos,nflTeam,note}
+  draftPaused:false, currentPickDeadline:null, pausedRemainingMs:null, commissioner_user_id:null, name:'' };
+let players = []; // {id,name,pos,nflTeam,thirdString}
 let scores = {};  // { week: { playerId: points } }
 let chat = [];    // [{id,author,text,ts}]
 let queues = {};  // { teamId: [playerId, playerId, ...] } pre-rank order, index 0 = top priority
@@ -417,8 +444,6 @@ let weights = {
   pa_0:10, pa_1_6:7, pa_7_13:4, pa_14_20:1, pa_21_27:0, pa_28_plus:0
 };
 let sleeperPlayerCache = null; // {sleeperId: {name, pos, team}} loaded once per session
-let commissionerPin = null;    // shared PIN gating Rules + Scoring Weights edits
-let unlocked = false;          // true once correct PIN entered this session
 let lineups = {};              // { week: { teamId: { slotId: playerId } } }
 
 const POS = ['QB','RB','WR','TE','DEF','K'];
@@ -560,48 +585,294 @@ Los Angeles Rams, DEF, LAR
 San Francisco 49ers, DEF, SF
 Seattle Seahawks, DEF, SEA`;
 
-function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-function normalizeLeague(l){
-  if(!l.teams) l.teams = [];
-  if(!l.picks) l.picks = [];
-  if(l.numQB===undefined) l.numQB = 2;
-  if(l.numDEF===undefined) l.numDEF = 1;
-  if(l.numK===undefined) l.numK = 1;
-  if(l.numSuperflex===undefined) l.numSuperflex = 1;
-  if(l.benchSize===undefined) l.benchSize = 3;
-  if(!l.rosterSize) l.rosterSize = l.numQB+l.numDEF+l.numK+l.numSuperflex+l.benchSize;
-  if(!l.draftOrder) l.draftOrder = [];
-  if(l.draftScheduledAt===undefined) l.draftScheduledAt = null;
-  if(l.draftType===undefined) l.draftType = 'snake';
-  if(l.pickTimeSeconds===undefined) l.pickTimeSeconds = 90;
-  if(l.draftOrderMethod===undefined) l.draftOrderMethod = 'random';
-  if(!l.manualOrder) l.manualOrder = [];
-  if(l.autopickEnabled===undefined) l.autopickEnabled = true;
-  if(l.draftPaused===undefined) l.draftPaused = false;
-  if(l.currentPickDeadline===undefined) l.currentPickDeadline = null;
-  if(l.pausedRemainingMs===undefined) l.pausedRemainingMs = null;
-  return l;
+function genLeagueCode(){
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no O/0/I/1
+  let s=''; for(let i=0;i<6;i++) s += chars[Math.floor(Math.random()*chars.length)];
+  return s;
 }
 
-async function loadAll(){
-  league = normalizeLeague(await sGet('league-data', league));
-  players = await sGet('league-players', []);
-  scores = await sGet('league-scores', {});
-  chat = await sGet('league-chat', []);
-  weights = await sGet('league-weights', weights);
-  commissionerPin = await sGet('league-pin', null);
-  queues = await sGet('league-queues', {});
-  lineups = await sGet('league-lineups', {});
+function updateUnlocked(){
+  unlocked = !!(session && leagueRow && session.user.id === leagueRow.commissioner_user_id);
+}
+function recomputeMyTeam(){
+  myTeam = (session && league.teams) ? (league.teams.find(t=>t.ownerUserId===session.user.id) || null) : null;
+}
+function needsFirstLoginSetup(){
+  if(!session || unlocked) return false;
+  return !myTeam;
+}
+
+// ---------- data loaders (each maps DB rows into the shapes the render code expects) ----------
+function applySettingsRow(settings){
+  if(!settings) return;
+  league.rules = settings.rules || '';
+  league.numQB = settings.num_qb ?? 2;
+  league.numDEF = settings.num_def ?? 1;
+  league.numK = settings.num_k ?? 1;
+  league.numSuperflex = settings.num_superflex ?? 1;
+  league.benchSize = settings.bench_size ?? 3;
+  league.rosterSize = league.numQB + league.numDEF + league.numK + league.numSuperflex + league.benchSize;
+  league.draftScheduledAt = settings.draft_scheduled_at || null;
+  league.draftType = settings.draft_type || 'snake';
+  league.pickTimeSeconds = settings.pick_time_seconds ?? 90;
+  league.draftOrderMethod = settings.draft_order_method || 'random';
+  league.manualOrder = settings.manual_order || [];
+  league.autopickEnabled = settings.autopick_enabled ?? true;
+  if(settings.weights && Object.keys(settings.weights).length) weights = Object.assign({}, weights, settings.weights);
+}
+function applyRuntimeRow(runtime){
+  if(!runtime) return;
+  league.draftStarted = runtime.draft_started || false;
+  league.draftOrder = runtime.draft_order || [];
+  league.draftPaused = runtime.draft_paused || false;
+  league.currentPickDeadline = runtime.current_pick_deadline ? new Date(runtime.current_pick_deadline).getTime() : null;
+  league.pausedRemainingMs = runtime.paused_remaining_ms ?? null;
+}
+
+async function loadLeague(){
+  const { data: lg } = await sb.from('leagues').select('*').eq('id', LEAGUE_ID).maybeSingle();
+  if(!lg) return false;
+  leagueRow = lg;
+  league.commissioner_user_id = lg.commissioner_user_id;
+  league.name = lg.name;
+  const [{ data: settings }, { data: runtime }] = await Promise.all([
+    sb.from('league_settings').select('*').eq('league_id', LEAGUE_ID).maybeSingle(),
+    sb.from('draft_runtime').select('*').eq('league_id', LEAGUE_ID).maybeSingle()
+  ]);
+  applySettingsRow(settings); applyRuntimeRow(runtime);
+  return true;
+}
+async function loadTeams(){
+  const { data } = await sb.from('teams').select('*').eq('league_id', LEAGUE_ID).order('created_at');
+  league.teams = (data||[]).map(t=>({ id:t.id, name:t.name, owner:t.owner_name||'', ownerUserId:t.owner_user_id }));
+}
+async function loadPlayers(){
+  const { data } = await sb.from('players').select('*').eq('league_id', LEAGUE_ID).order('name');
+  players = (data||[]).map(p=>({ id:p.id, name:p.name, pos:p.pos, nflTeam:p.nfl_team||'', thirdString:!!p.third_string }));
+}
+async function loadPicks(){
+  const { data } = await sb.from('picks').select('*').eq('league_id', LEAGUE_ID).order('pick_number');
+  league.picks = (data||[]).map(pk=>({ playerId:pk.player_id, teamId:pk.team_id, pick:pk.pick_number, auto:!!pk.auto }));
+  league.currentPick = league.picks.length;
+}
+async function loadQueuesData(){
+  const { data } = await sb.from('queues').select('*').eq('league_id', LEAGUE_ID).order('rank');
+  queues = {};
+  (data||[]).forEach(q=>{ if(!queues[q.team_id]) queues[q.team_id]=[]; queues[q.team_id].push(q.player_id); });
+}
+async function loadScoresData(){
+  const { data } = await sb.from('scores').select('*').eq('league_id', LEAGUE_ID);
+  scores = {};
+  (data||[]).forEach(s=>{ if(!scores[s.week]) scores[s.week]={}; scores[s.week][s.player_id] = Number(s.points)||0; });
+}
+async function loadLineupsData(){
+  const { data } = await sb.from('lineups').select('*').eq('league_id', LEAGUE_ID);
+  lineups = {};
+  (data||[]).forEach(l=>{ if(!lineups[l.week]) lineups[l.week]={}; if(!lineups[l.week][l.team_id]) lineups[l.week][l.team_id]={}; lineups[l.week][l.team_id][l.slot_id]=l.player_id; });
+}
+async function loadChatData(){
+  const { data } = await sb.from('chat_messages').select('*').eq('league_id', LEAGUE_ID).order('created_at');
+  chat = (data||[]).map(m=>({ id:m.id, author:m.author, text:m.text, ts:new Date(m.created_at).getTime() }));
+}
+async function loadMembers(){
+  if(!unlocked){ members = []; return; }
+  const { data } = await sb.from('league_members').select('*').eq('league_id', LEAGUE_ID).order('invited_at');
+  members = data || [];
+}
+async function loadAllLeagueData(){
+  await Promise.all([loadTeams(), loadPlayers(), loadPicks(), loadQueuesData(), loadScoresData(), loadLineupsData(), loadChatData()]);
+  await loadMembers();
+}
+
+// ---------- boot / routing / auth ----------
+async function fetchMyMemberRow(){
+  if(!session) return null;
+  const { data } = await sb.from('league_members').select('*').eq('league_id', LEAGUE_ID).eq('email', session.user.email).maybeSingle();
+  return data;
+}
+
+function showMainApp(){
+  document.getElementById('altScreen').innerHTML = '';
+  document.getElementById('appShell').style.display = 'block';
+}
+
+async function enterLeague(){
+  const ok = await loadLeague();
+  if(!ok){ renderLeagueNotFound(); return; }
+  updateUnlocked();
+  await loadAllLeagueData();
+  recomputeMyTeam();
+  if(session && needsFirstLoginSetup()){ await renderFirstLoginSetup(); return; }
+  showMainApp();
   renderAll();
   subscribeRealtime();
-  setInterval(tickClock, 1000);
+  if(!clockLoopStarted){ setInterval(tickClock, 1000); clockLoopStarted = true; }
+}
+
+async function onAuthChanged(){
+  updateUnlocked();
+  if(!LEAGUE_ID){ recomputeMyTeam(); renderLanding(); return; }
+  recomputeMyTeam();
+  if(session && needsFirstLoginSetup()){ await renderFirstLoginSetup(); return; }
+  showMainApp();
+  renderAll();
+}
+
+sb.auth.onAuthStateChange((event, sess)=>{
+  session = sess;
+  if(!appReady) return; // the initial getSession() + boot() sequence below handles the first state
+  onAuthChanged();
+});
+
+async function boot(){
+  const { data } = await sb.auth.getSession();
+  session = data.session;
+  LEAGUE_ID = new URLSearchParams(location.search).get('league');
+  if(!LEAGUE_ID){ appReady = true; renderLanding(); return; }
+  await enterLeague();
+  appReady = true;
+}
+
+// ---------- alternate screens (no league selected / league not found / first-login setup) ----------
+async function renderLanding(){
+  document.getElementById('appShell').style.display = 'none';
+  const el = document.getElementById('altScreen');
+  if(!session){
+    el.innerHTML = `
+      <div class="landing-wrap">
+        <div class="eyebrow" style="text-align:center;">BACKUPS ONLY LEAGUE</div>
+        <h1 class="brand" style="text-align:center;font-size:44px;">START OR JOIN <span>A LEAGUE</span></h1>
+        <div class="panel">
+          <h2>Log In</h2>
+          <div class="sub">Log in with a magic link to create your own league — or open the invite link a commissioner sent you to join theirs.</div>
+          <div class="row">
+            <div class="field"><input type="text" id="landingEmail" placeholder="you@example.com"></div>
+            <div class="field" style="max-width:180px;"><button class="btn" id="landingLoginBtn" style="width:100%;">Send Magic Link</button></div>
+          </div>
+          <div id="landingMsg" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
+        </div>
+      </div>`;
+    document.getElementById('landingLoginBtn').onclick = async ()=>{
+      const email = document.getElementById('landingEmail').value.trim();
+      const msg = document.getElementById('landingMsg');
+      if(!email){ msg.textContent='Enter an email address.'; return; }
+      msg.textContent = 'Sending…';
+      const { error } = await sb.auth.signInWithOtp({ email, options:{ emailRedirectTo: location.origin+location.pathname } });
+      msg.textContent = error ? ('Error: '+error.message) : `Check ${email} for a login link.`;
+    };
+    return;
+  }
+  const hasLegacy = await legacyHasData();
+  el.innerHTML = `
+    <div class="landing-wrap">
+      <div class="eyebrow" style="text-align:center;">BACKUPS ONLY LEAGUE</div>
+      <h1 class="brand" style="text-align:center;font-size:44px;">CREATE <span>A LEAGUE</span></h1>
+      <div class="panel">
+        <h2>Signed in as ${esc(session.user.email)}</h2>
+        <div class="sub">Name your league — you'll be its commissioner.</div>
+        <div class="field"><input type="text" id="newLeagueName" placeholder="The Clipboard Crew League"></div>
+        ${hasLegacy ? `<div class="field"><label style="display:flex;align-items:center;gap:6px;color:var(--chalk);"><input type="checkbox" id="importLegacyCheck" style="width:auto;" checked> Import this site's existing rules, scoring settings, and player pool</label></div>` : ''}
+        <button class="btn" id="createLeagueBtn">Create League</button>
+        <div id="createLeagueMsg" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
+      </div>
+      <div style="text-align:center;"><button class="btn ghost" id="landingLogoutBtn">Log Out</button></div>
+    </div>`;
+  document.getElementById('landingLogoutBtn').onclick = async ()=>{ await sb.auth.signOut(); };
+  document.getElementById('createLeagueBtn').onclick = async ()=>{
+    const name = document.getElementById('newLeagueName').value.trim();
+    const msg = document.getElementById('createLeagueMsg');
+    if(!name){ msg.textContent = 'Name your league first.'; return; }
+    msg.textContent = 'Creating…';
+    const code = await createLeagueRow(name, session.user.id);
+    if(!code){ msg.textContent = "Something went wrong — try again."; return; }
+    if(document.getElementById('importLegacyCheck')?.checked){ await importLegacyData(code); }
+    location.search = '?league='+code;
+  };
+}
+
+async function createLeagueRow(name, userId){
+  for(let attempt=0; attempt<5; attempt++){
+    const code = genLeagueCode();
+    const { error } = await sb.from('leagues').insert({ id: code, name, commissioner_user_id: userId });
+    if(!error){
+      await sb.from('league_settings').insert({ league_id: code });
+      await sb.from('draft_runtime').insert({ league_id: code });
+      return code;
+    }
+    if(error.code !== '23505'){ console.error(error); return null; }
+  }
+  return null;
+}
+
+async function importLegacyData(leagueId){
+  try{
+    const oldLeague = await legacyGet('league-data', null);
+    const oldPlayers = await legacyGet('league-players', []);
+    const oldWeights = await legacyGet('league-weights', null);
+    const updates = {};
+    if(oldLeague){
+      if(oldLeague.rules) updates.rules = oldLeague.rules;
+      if(oldLeague.numQB!==undefined) updates.num_qb = oldLeague.numQB;
+      if(oldLeague.numDEF!==undefined) updates.num_def = oldLeague.numDEF;
+      if(oldLeague.numK!==undefined) updates.num_k = oldLeague.numK;
+      if(oldLeague.numSuperflex!==undefined) updates.num_superflex = oldLeague.numSuperflex;
+      if(oldLeague.benchSize!==undefined) updates.bench_size = oldLeague.benchSize;
+    }
+    if(oldWeights) updates.weights = oldWeights;
+    if(Object.keys(updates).length) await sb.from('league_settings').update(updates).eq('league_id', leagueId);
+    if(oldPlayers && oldPlayers.length){
+      const rows = oldPlayers.map(p=>({ league_id:leagueId, name:p.name, pos:p.pos, nfl_team:p.nflTeam||'', third_string:!!p.thirdString }));
+      await sb.from('players').insert(rows);
+    }
+  }catch(e){ console.error('legacy import failed', e); }
+}
+
+function renderLeagueNotFound(){
+  document.getElementById('appShell').style.display = 'none';
+  document.getElementById('altScreen').innerHTML = `
+    <div class="landing-wrap">
+      <div class="panel">
+        <h2>League Not Found</h2>
+        <div class="sub">The link you followed doesn't match a league. Double-check it with whoever sent it, or <a href="${esc(location.pathname)}" style="color:var(--gold-bright);">start your own</a>.</div>
+      </div>
+    </div>`;
+}
+
+async function renderFirstLoginSetup(){
+  document.getElementById('appShell').style.display = 'none';
+  const myInvite = await fetchMyMemberRow();
+  const suggested = myInvite?.suggested_team_name || '';
+  document.getElementById('altScreen').innerHTML = `
+    <div class="landing-wrap">
+      <div class="panel">
+        <h2>Welcome to ${esc(leagueRow.name)}</h2>
+        <div class="sub">Set up your team — signed in as ${esc(session.user.email)}.</div>
+        <div class="field"><label>Team name</label><input type="text" id="setupTeamName" value="${esc(suggested)}" placeholder="The Clipboard Crew"></div>
+        <div class="field"><label>Your name (shown to the league)</label><input type="text" id="setupOwnerName" placeholder="Pete"></div>
+        <button class="btn" id="setupTeamBtn">Join League</button>
+        <div id="setupMsg" style="font-size:12px;color:var(--red);margin-top:8px;"></div>
+      </div>
+      <div style="text-align:center;"><button class="btn ghost" id="setupLogoutBtn">Log Out</button></div>
+    </div>`;
+  document.getElementById('setupLogoutBtn').onclick = async ()=>{ await sb.auth.signOut(); };
+  document.getElementById('setupTeamBtn').onclick = async ()=>{
+    const name = document.getElementById('setupTeamName').value.trim();
+    const ownerName = document.getElementById('setupOwnerName').value.trim();
+    const msg = document.getElementById('setupMsg');
+    if(!name){ msg.textContent = 'Enter a team name.'; return; }
+    const { data: newTeam, error } = await sb.from('teams').insert({ league_id: LEAGUE_ID, name, owner_name: ownerName, owner_user_id: session.user.id }).select().maybeSingle();
+    if(error){ msg.textContent = error.message; return; }
+    await sb.from('league_members').upsert({ league_id: LEAGUE_ID, email: session.user.email, user_id: session.user.id, team_id: newTeam.id, status:'joined' }, { onConflict:'league_id,email' });
+    await enterLeague();
+  };
 }
 
 function renderAll(){
   document.getElementById('rulesText').value = league.rules || '';
   renderLineupSummary();
-  renderLock();
+  renderAuthBox();
   renderWeights();
   renderTeams();
   renderDraftSettings();
@@ -609,6 +880,12 @@ function renderAll(){
   renderRosters();
   renderStandings();
   renderChat();
+  renderCommissionerTab();
+  const commBtn = document.getElementById('commissionerNavBtn');
+  commBtn.style.display = unlocked ? '' : 'none';
+  if(!unlocked && document.getElementById('tab-commissioner').classList.contains('active')){
+    document.querySelector('nav button[data-tab="rules"]').click();
+  }
 }
 
 // ---------- tabs ----------
@@ -625,16 +902,20 @@ document.getElementById('nav').addEventListener('click', e=>{
 document.getElementById('saveRules').addEventListener('click', async ()=>{
   if(!unlocked) return;
   league.rules = document.getElementById('rulesText').value;
-  await sSet('league-data', league);
+  await sb.from('league_settings').update({ rules: league.rules }).eq('league_id', LEAGUE_ID);
 });
 document.getElementById('saveLineupSettings').addEventListener('click', async ()=>{
+  if(!unlocked) return;
   league.numQB = parseInt(document.getElementById('numQB').value)||0;
   league.numDEF = parseInt(document.getElementById('numDEF').value)||0;
   league.numK = parseInt(document.getElementById('numK').value)||0;
   league.numSuperflex = parseInt(document.getElementById('numSuperflex').value)||0;
   league.benchSize = parseInt(document.getElementById('benchSize').value)||0;
   league.rosterSize = league.numQB + league.numDEF + league.numK + league.numSuperflex + league.benchSize;
-  await sSet('league-data', league);
+  await sb.from('league_settings').update({
+    num_qb: league.numQB, num_def: league.numDEF, num_k: league.numK,
+    num_superflex: league.numSuperflex, bench_size: league.benchSize
+  }).eq('league_id', LEAGUE_ID);
   renderLineupSummary();
   renderDraft();
 });
@@ -727,7 +1008,14 @@ document.getElementById('saveDraftSettings').addEventListener('click', async ()=
   league.pickTimeSeconds = parseInt(document.getElementById('pickTimeSeconds').value) || 0;
   league.draftOrderMethod = document.getElementById('draftOrderMethod').value;
   league.autopickEnabled = document.getElementById('autopickEnabled').checked;
-  await sSet('league-data', league);
+  await sb.from('league_settings').update({
+    draft_scheduled_at: league.draftScheduledAt,
+    draft_type: league.draftType,
+    pick_time_seconds: league.pickTimeSeconds,
+    draft_order_method: league.draftOrderMethod,
+    manual_order: league.manualOrder,
+    autopick_enabled: league.autopickEnabled
+  }).eq('league_id', LEAGUE_ID);
   document.getElementById('draftSettingsMsg').textContent = 'Draft settings saved.';
   renderDraft();
 });
@@ -745,7 +1033,7 @@ document.getElementById('saveWeights').addEventListener('click', async ()=>{
     const el = document.getElementById('w_'+k);
     if(el) weights[k] = parseFloat(el.value)||0;
   });
-  await sSet('league-weights', weights);
+  await sb.from('league_settings').update({ weights }).eq('league_id', LEAGUE_ID);
 });
 document.getElementById('saveKickerWeights').addEventListener('click', async ()=>{
   if(!unlocked) return;
@@ -753,7 +1041,7 @@ document.getElementById('saveKickerWeights').addEventListener('click', async ()=
     const el = document.getElementById('w_'+k);
     if(el) weights[k] = parseFloat(el.value)||0;
   });
-  await sSet('league-weights', weights);
+  await sb.from('league_settings').update({ weights }).eq('league_id', LEAGUE_ID);
 });
 const defWeightKeys = ['def_sack','def_int','def_fum_rec','def_td','def_safety','def_block_kick','def_return_td','def_xp_ret','pa_0','pa_1_6','pa_7_13','pa_14_20','pa_21_27','pa_28_plus'];
 document.getElementById('saveDefWeights').addEventListener('click', async ()=>{
@@ -762,81 +1050,49 @@ document.getElementById('saveDefWeights').addEventListener('click', async ()=>{
     const el = document.getElementById('w_'+k);
     if(el) weights[k] = parseFloat(el.value)||0;
   });
-  await sSet('league-weights', weights);
+  await sb.from('league_settings').update({ weights }).eq('league_id', LEAGUE_ID);
 });
 
-// ---------- commissioner lock ----------
-function renderLock(){
+// ---------- auth box (replaces the old PIN lock) ----------
+function commissionerLockableInputs(){
+  return [
+    document.getElementById('rulesText'), document.getElementById('saveRules'),
+    ...Array.from(document.querySelectorAll('[id^="w_"]')),
+    document.getElementById('saveWeights'), document.getElementById('saveKickerWeights'), document.getElementById('saveDefWeights'),
+    document.getElementById('numQB'), document.getElementById('numDEF'), document.getElementById('numK'), document.getElementById('numSuperflex'), document.getElementById('benchSize'), document.getElementById('saveLineupSettings'),
+    document.getElementById('teamName'), document.getElementById('ownerName'), document.getElementById('addTeam')
+  ].filter(Boolean);
+}
+
+function renderAuthBox(){
   const panel = document.getElementById('lockPanel');
-  const rulesText = document.getElementById('rulesText');
-  const saveRulesBtn = document.getElementById('saveRules');
-  const weightInputs = Array.from(document.querySelectorAll('[id^="w_"]'));
-  const saveWeightsBtn = document.getElementById('saveWeights');
-  const saveKickerBtn = document.getElementById('saveKickerWeights');
-  const saveDefBtn = document.getElementById('saveDefWeights');
+  commissionerLockableInputs().forEach(i=>{ if(unlocked) i.removeAttribute('disabled'); else i.setAttribute('disabled',''); });
 
-  const lockThese = () => {
-    rulesText.setAttribute('disabled','');
-    saveRulesBtn.setAttribute('disabled','');
-    weightInputs.forEach(i=>i.setAttribute('disabled',''));
-    saveWeightsBtn.setAttribute('disabled','');
-    saveKickerBtn.setAttribute('disabled','');
-    saveDefBtn.setAttribute('disabled','');
-  };
-  const unlockThese = () => {
-    rulesText.removeAttribute('disabled');
-    saveRulesBtn.removeAttribute('disabled');
-    weightInputs.forEach(i=>i.removeAttribute('disabled'));
-    saveWeightsBtn.removeAttribute('disabled');
-    saveKickerBtn.removeAttribute('disabled');
-    saveDefBtn.removeAttribute('disabled');
-  };
-
-  if(unlocked){
-    unlockThese();
-    panel.innerHTML = `<h2>🔓 Commissioner Access</h2><div class="sub">Unlocked for this session — you can edit Rules, Scoring Weights, and Draft Settings below. Other people who open this page still need the PIN.</div>`;
-    renderDraftSettings();
-    return;
-  }
-
-  lockThese();
-
-  if(!commissionerPin){
-    panel.innerHTML = `
-      <h2>🔒 Commissioner Access</h2>
-      <div class="sub">No PIN set yet. Set one now so only you can edit Rules and Scoring Weights — everyone else in the league will see them but can't change them.</div>
-      <div class="row">
-        <div class="field"><input type="text" id="setPinInput" placeholder="Choose a PIN"></div>
-        <div class="field" style="max-width:160px;"><button class="btn" id="setPinBtn" style="width:100%;">Set PIN & Unlock</button></div>
-      </div>
-      <div class="warn">Heads up: this is a simple honor-system lock for a friend group, not real security — the PIN lives in shared data and anyone technical enough to dig through browser dev tools could bypass it. It's meant to stop casual edits, not a determined snoop.</div>
-    `;
-    document.getElementById('setPinBtn').onclick = async ()=>{
-      const val = document.getElementById('setPinInput').value.trim();
-      if(!val) return;
-      commissionerPin = val;
-      await sSet('league-pin', commissionerPin);
-      unlocked = true;
-      renderLock();
-    };
+  if(session){
+    const roleLine = unlocked
+      ? `<div class="sub">You're the commissioner of ${esc(leagueRow.name)} — you can edit Rules, Scoring, and Draft Settings below.</div>`
+      : myTeam
+        ? `<div class="sub">Signed in as ${esc(session.user.email)}, managing <strong>${esc(myTeam.name)}</strong>. Only the commissioner can edit Rules/Scoring/Settings — you can rename your team below and edit your queue on the Draft tab.</div>`
+        : `<div class="sub">Signed in as ${esc(session.user.email)}. Only the commissioner can edit Rules/Scoring/Settings.</div>`;
+    panel.innerHTML = `<h2>${unlocked?'🔓':'👤'} ${esc(session.user.email)}</h2>${roleLine}<button class="btn ghost" id="authLogoutBtn" style="margin-top:8px;">Log Out</button>`;
+    document.getElementById('authLogoutBtn').onclick = async ()=>{ await sb.auth.signOut(); };
   } else {
     panel.innerHTML = `
-      <h2>🔒 Commissioner Access</h2>
-      <div class="sub">Rules and Scoring Weights are locked. Enter the commissioner PIN to edit.</div>
+      <h2>🔒 Log In</h2>
+      <div class="sub">Log in to edit your team — or, if you're the commissioner, Rules/Scoring/Settings.</div>
       <div class="row">
-        <div class="field"><input type="text" id="unlockInput" placeholder="PIN"></div>
-        <div class="field" style="max-width:160px;"><button class="btn" id="unlockBtn" style="width:100%;">Unlock</button></div>
+        <div class="field"><input type="text" id="authEmailInput" placeholder="you@example.com"></div>
+        <div class="field" style="max-width:180px;"><button class="btn" id="authLoginBtn" style="width:100%;">Send Magic Link</button></div>
       </div>
-      <div id="lockMsg" style="font-size:12px; color:var(--red); margin-top:6px;"></div>
+      <div id="authMsg" style="font-size:12px; color:var(--muted); margin-top:6px;"></div>
     `;
-    document.getElementById('unlockBtn').onclick = ()=>{
-      const val = document.getElementById('unlockInput').value.trim();
-      if(val === commissionerPin){
-        unlocked = true;
-        renderLock();
-      } else {
-        document.getElementById('lockMsg').textContent = 'Wrong PIN.';
-      }
+    document.getElementById('authLoginBtn').onclick = async ()=>{
+      const email = document.getElementById('authEmailInput').value.trim();
+      const msg = document.getElementById('authMsg');
+      if(!email){ msg.textContent = 'Enter an email address.'; return; }
+      msg.textContent = 'Sending…';
+      const { error } = await sb.auth.signInWithOtp({ email, options:{ emailRedirectTo: location.origin+location.pathname+'?league='+LEAGUE_ID } });
+      msg.textContent = error ? ('Error: '+error.message) : `Check ${email} for a login link.`;
     };
   }
   renderDraftSettings();
@@ -844,13 +1100,15 @@ function renderLock(){
 
 // ---------- teams ----------
 document.getElementById('addTeam').addEventListener('click', async ()=>{
+  if(!unlocked) return;
   const name = document.getElementById('teamName').value.trim();
   const owner = document.getElementById('ownerName').value.trim();
   if(!name) return;
-  league.teams.push({id:uid(), name, owner});
+  const { error } = await sb.from('teams').insert({ league_id: LEAGUE_ID, name, owner_name: owner, owner_user_id: null });
+  if(error){ alert(error.message); return; }
   document.getElementById('teamName').value='';
   document.getElementById('ownerName').value='';
-  await sSet('league-data', league);
+  await loadTeams();
   renderTeams(); renderDraft(); renderRosters(); renderStandings();
 });
 
@@ -858,26 +1116,40 @@ function renderTeams(){
   const ul = document.getElementById('teamList');
   ul.innerHTML='';
   renderManualOrderList();
-  if(league.teams.length===0){ ul.innerHTML = '<div class="empty">No teams yet — add your league below.</div>'; return; }
+  if(league.teams.length===0){ ul.innerHTML = '<div class="empty">No teams yet.</div>'; return; }
   league.teams.forEach(t=>{
     const li = document.createElement('li');
     li.className='list-row';
-    li.innerHTML = `<span><strong>${esc(t.name)}</strong> <span style="color:var(--muted);font-size:12px;">— ${esc(t.owner||'')}</span></span>`;
-    if(!league.draftStarted){
+    const isMine = myTeam && myTeam.id===t.id;
+    li.innerHTML = `<span><strong>${esc(t.name)}</strong> <span style="color:var(--muted);font-size:12px;">— ${esc(t.owner||'')}</span>${isMine?'<span class="owner-tag">YOUR TEAM</span>':''}</span>`;
+    const btnWrap = document.createElement('span');
+    if(isMine){
+      const renameBtn = document.createElement('button');
+      renameBtn.className='btn ghost'; renameBtn.textContent='Rename';
+      renameBtn.style.marginRight='6px';
+      renameBtn.onclick = async ()=>{
+        const newName = prompt('New team name', t.name);
+        if(!newName || !newName.trim()) return;
+        await sb.from('teams').update({ name: newName.trim() }).eq('id', t.id);
+        await loadTeams(); recomputeMyTeam();
+        renderTeams(); renderDraft(); renderRosters(); renderStandings();
+      };
+      btnWrap.appendChild(renameBtn);
+    }
+    if(!league.draftStarted && unlocked){
       const rm = document.createElement('button');
       rm.className='btn danger'; rm.textContent='Remove';
       rm.onclick = async ()=>{
-        league.teams = league.teams.filter(x=>x.id!==t.id);
-        await sSet('league-data', league);
+        await sb.from('teams').delete().eq('id', t.id);
+        await loadTeams(); recomputeMyTeam();
         renderTeams(); renderDraft(); renderRosters(); renderStandings();
       };
-      li.appendChild(rm);
+      btnWrap.appendChild(rm);
     }
+    li.appendChild(btnWrap);
     ul.appendChild(li);
   });
 }
-
-function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 // ---------- draft ----------
 function draftedIds(){ return new Set(league.picks.map(p=>p.playerId)); }
@@ -927,23 +1199,21 @@ function updateClockDisplays(){
 }
 
 async function startDraftNow(){
-  const fresh = normalizeLeague(await sGet('league-data', league));
-  if(fresh.draftStarted){ league = fresh; renderDraft(); renderRosters(); renderStandings(); return; }
+  const { data: runtime } = await sb.from('draft_runtime').select('draft_started').eq('league_id', LEAGUE_ID).maybeSingle();
+  if(runtime?.draft_started){ await loadAllLeagueData(); renderDraft(); renderRosters(); renderStandings(); return; }
   let order;
-  if(fresh.draftOrderMethod==='manual' && fresh.manualOrder && fresh.manualOrder.length===fresh.teams.length){
-    order = [...fresh.manualOrder];
+  if(league.draftOrderMethod==='manual' && league.manualOrder && league.manualOrder.length===league.teams.length){
+    order = [...league.manualOrder];
   } else {
-    order = shuffle(fresh.teams.map(t=>t.id));
+    order = shuffle(league.teams.map(t=>t.id));
   }
-  fresh.draftOrder = order;
-  fresh.draftStarted = true;
-  fresh.currentPick = 0;
-  fresh.picks = [];
-  fresh.draftPaused = false;
-  fresh.pausedRemainingMs = null;
-  fresh.currentPickDeadline = fresh.pickTimeSeconds ? (Date.now() + fresh.pickTimeSeconds*1000) : null;
-  league = fresh;
-  await sSet('league-data', league);
+  const deadline = league.pickTimeSeconds ? new Date(Date.now()+league.pickTimeSeconds*1000).toISOString() : null;
+  const { error } = await sb.from('draft_runtime').update({
+    draft_started:true, draft_order:order, draft_paused:false, paused_remaining_ms:null, current_pick_deadline:deadline
+  }).eq('league_id', LEAGUE_ID);
+  if(error){ console.error(error); return; }
+  league.draftStarted = true; league.draftOrder = order; league.draftPaused = false; league.pausedRemainingMs = null;
+  league.currentPickDeadline = deadline ? new Date(deadline).getTime() : null;
   renderDraft(); renderRosters(); renderStandings();
 }
 
@@ -959,46 +1229,46 @@ async function checkScheduledStart(){
 
 async function pauseDraft(){
   if(!unlocked) return;
-  const fresh = normalizeLeague(await sGet('league-data', league));
-  if(!fresh.draftStarted || fresh.draftPaused){ league = fresh; renderDraft(); return; }
-  fresh.draftPaused = true;
-  fresh.pausedRemainingMs = fresh.currentPickDeadline ? Math.max(0, fresh.currentPickDeadline - Date.now()) : null;
-  fresh.currentPickDeadline = null;
-  league = fresh;
-  await sSet('league-data', league);
+  if(!league.draftStarted || league.draftPaused) return;
+  const remaining = league.currentPickDeadline ? Math.max(0, league.currentPickDeadline-Date.now()) : null;
+  const { error } = await sb.from('draft_runtime').update({ draft_paused:true, paused_remaining_ms:remaining, current_pick_deadline:null }).eq('league_id', LEAGUE_ID);
+  if(error){ console.error(error); return; }
+  league.draftPaused = true; league.pausedRemainingMs = remaining; league.currentPickDeadline = null;
   renderDraft();
 }
 async function resumeDraft(){
   if(!unlocked) return;
-  const fresh = normalizeLeague(await sGet('league-data', league));
-  if(!fresh.draftStarted || !fresh.draftPaused){ league = fresh; renderDraft(); return; }
-  fresh.draftPaused = false;
-  fresh.currentPickDeadline = (fresh.pausedRemainingMs!=null) ? (Date.now() + fresh.pausedRemainingMs) : null;
-  fresh.pausedRemainingMs = null;
-  league = fresh;
-  await sSet('league-data', league);
+  if(!league.draftStarted || !league.draftPaused) return;
+  const deadline = (league.pausedRemainingMs!=null) ? new Date(Date.now()+league.pausedRemainingMs).toISOString() : null;
+  const { error } = await sb.from('draft_runtime').update({ draft_paused:false, current_pick_deadline:deadline, paused_remaining_ms:null }).eq('league_id', LEAGUE_ID);
+  if(error){ console.error(error); return; }
+  league.draftPaused = false; league.currentPickDeadline = deadline ? new Date(deadline).getTime() : null; league.pausedRemainingMs = null;
   renderDraft();
 }
 
 async function commitPick(playerId, opts={}){
-  const fresh = normalizeLeague(await sGet('league-data', league));
-  league = fresh;
   const totalPicks = league.rosterSize * league.teams.length;
-  if(!league.draftStarted || league.draftPaused || league.currentPick>=totalPicks){ renderDraft(); return false; }
-  if(league.picks.some(p=>p.playerId===playerId)){ renderDraft(); return false; }
-  const teamOnClock = league.teams.find(t=>t.id===teamAtPick(league.currentPick));
-  if(!teamOnClock){ renderDraft(); return false; }
-  league.picks.push({playerId, teamId:teamOnClock.id, pick:league.currentPick+1, auto:!!opts.auto});
-  league.currentPick += 1;
-  const doneNow = league.currentPick >= totalPicks;
-  league.currentPickDeadline = (!doneNow && league.pickTimeSeconds) ? (Date.now() + league.pickTimeSeconds*1000) : null;
-  league.pausedRemainingMs = null;
-  await sSet('league-data', league);
-  let queuesChanged = false;
-  Object.keys(queues).forEach(tid=>{
-    if(queues[tid] && queues[tid].includes(playerId)){ queues[tid] = queues[tid].filter(id=>id!==playerId); queuesChanged = true; }
+  if(!league.draftStarted || league.draftPaused || league.picks.length>=totalPicks) return false;
+  const pickNumber = league.picks.length + 1;
+  const teamOnClock = league.teams.find(t=>t.id===teamAtPick(league.picks.length));
+  if(!teamOnClock) return false;
+  const { error } = await sb.from('picks').insert({
+    league_id: LEAGUE_ID, team_id: teamOnClock.id, player_id: playerId, pick_number: pickNumber, auto: !!opts.auto
   });
-  if(queuesChanged) await sSet('league-queues', queues);
+  if(error){
+    // a unique-constraint hit means someone else made this pick (or drafted this
+    // player) first — reload the real state instead of trusting our stale guess.
+    await loadPicks(); renderDraft(); renderRosters(); renderStandings();
+    return false;
+  }
+  await loadPicks();
+  const doneNow = league.picks.length >= totalPicks;
+  const newDeadline = (!doneNow && league.pickTimeSeconds) ? new Date(Date.now()+league.pickTimeSeconds*1000).toISOString() : null;
+  await sb.from('draft_runtime').update({ current_pick_deadline:newDeadline, paused_remaining_ms:null }).eq('league_id', LEAGUE_ID);
+  league.currentPickDeadline = newDeadline ? new Date(newDeadline).getTime() : null;
+  league.pausedRemainingMs = null;
+  await sb.from('queues').delete().eq('player_id', playerId);
+  Object.keys(queues).forEach(tid=>{ if(queues[tid]) queues[tid] = queues[tid].filter(id=>id!==playerId); });
   renderDraft(); renderRosters(); renderStandings();
   return true;
 }
@@ -1031,6 +1301,14 @@ function tickClock(){
   updateClockDisplays();
 }
 
+async function saveQueueOrder(teamId, orderedIds){
+  await sb.from('queues').delete().eq('team_id', teamId);
+  if(orderedIds.length){
+    const rows = orderedIds.map((pid,i)=>({ team_id: teamId, player_id: pid, rank: i }));
+    await sb.from('queues').insert(rows);
+  }
+}
+
 function buildQueuePanel(){
   const panel = document.createElement('div');
   panel.className = 'panel';
@@ -1038,9 +1316,9 @@ function buildQueuePanel(){
   const done = league.draftStarted && league.currentPick >= totalPicks;
   panel.innerHTML = `
     <h2>Queue / Pre-Rank</h2>
-    <div class="sub">Rank the players you want before the draft — autopick (on timeout) and quick-drafting during your turn both pull from the top of this list.</div>
+    <div class="sub">Rank the players you want before the draft — autopick (on timeout) and quick-drafting during your turn both pull from the top of this list. You can only edit your own team's queue.</div>
     <div class="field" style="max-width:260px;"><label>Team</label><select id="queueTeamSelect"></select></div>
-    <div class="row" style="align-items:flex-end;">
+    <div class="row" style="align-items:flex-end;" id="queueAddRow">
       <div class="field" style="flex:2;"><label>Add player to queue</label><select id="queueAddSelect"></select></div>
       <div class="field" style="max-width:140px;"><button class="btn ghost" id="queueAddBtn" style="width:100%;">Add to Queue</button></div>
     </div>
@@ -1051,13 +1329,18 @@ function buildQueuePanel(){
 
   const teamSelect = panel.querySelector('#queueTeamSelect');
   teamSelect.innerHTML = league.teams.length
-    ? league.teams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')
+    ? league.teams.map(t=>`<option value="${t.id}">${esc(t.name)}${myTeam&&t.id===myTeam.id?' (you)':''}</option>`).join('')
     : '<option value="">Add a team first</option>';
+  if(myTeam) teamSelect.value = myTeam.id;
+
+  function canEditSelected(){ return !!(myTeam && teamSelect.value === myTeam.id); }
 
   function renderQueueForTeam(){
     const teamId = teamSelect.value;
     const addSelect = panel.querySelector('#queueAddSelect');
     const list = panel.querySelector('#queueList');
+    const editable = canEditSelected();
+    panel.querySelector('#queueAddRow').style.display = editable ? '' : 'none';
     if(!teamId){ addSelect.innerHTML=''; list.innerHTML = '<div class="empty">Add a team first.</div>'; return; }
     const drafted = draftedIds();
     const myQueue = (queues[teamId]||[]).filter(id=>!drafted.has(id));
@@ -1067,7 +1350,7 @@ function buildQueuePanel(){
       ? addable.map(p=>`<option value="${p.id}">${esc(p.name)} (${p.pos}${p.nflTeam?' · '+esc(p.nflTeam):''})</option>`).join('')
       : '<option value="">No available players to add</option>';
 
-    if(myQueue.length===0){ list.innerHTML = '<div class="empty">No players queued yet.</div>'; }
+    if(myQueue.length===0){ list.innerHTML = `<div class="empty">${editable?'No players queued yet.':'Nothing queued.'}</div>`; }
     else{
       list.innerHTML = myQueue.map((pid,i)=>{
         const p = players.find(x=>x.id===pid);
@@ -1075,35 +1358,37 @@ function buildQueuePanel(){
         return `<li class="queue-row">
           <span class="queue-rank">${i+1}.</span>
           <span style="flex:1;"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.name)}</span>
-          <button class="iconbtn" data-qmove="up" data-id="${pid}" ${i===0?'disabled':''}>↑</button>
+          ${editable ? `<button class="iconbtn" data-qmove="up" data-id="${pid}" ${i===0?'disabled':''}>↑</button>
           <button class="iconbtn" data-qmove="down" data-id="${pid}" ${i===myQueue.length-1?'disabled':''}>↓</button>
-          <button class="iconbtn" data-qremove="${pid}">✕</button>
+          <button class="iconbtn" data-qremove="${pid}">✕</button>` : ''}
         </li>`;
       }).join('');
     }
 
-    list.querySelectorAll('button[data-qmove]').forEach(btn=>{
-      btn.onclick = async ()=>{
-        const pid = btn.dataset.id;
-        const arr = (queues[teamId]||[]).filter(id=>!drafted.has(id));
-        const idx = arr.indexOf(pid);
-        const dir = btn.dataset.qmove==='up' ? -1 : 1;
-        const swapIdx = idx+dir;
-        if(idx<0 || swapIdx<0 || swapIdx>=arr.length) return;
-        [arr[idx], arr[swapIdx]] = [arr[swapIdx], arr[idx]];
-        queues[teamId] = arr;
-        await sSet('league-queues', queues);
-        renderQueueForTeam();
-      };
-    });
-    list.querySelectorAll('button[data-qremove]').forEach(btn=>{
-      btn.onclick = async ()=>{
-        const pid = btn.dataset.qremove;
-        queues[teamId] = (queues[teamId]||[]).filter(id=>id!==pid);
-        await sSet('league-queues', queues);
-        renderQueueForTeam();
-      };
-    });
+    if(editable){
+      list.querySelectorAll('button[data-qmove]').forEach(btn=>{
+        btn.onclick = async ()=>{
+          const pid = btn.dataset.id;
+          const arr = (queues[teamId]||[]).filter(id=>!drafted.has(id));
+          const idx = arr.indexOf(pid);
+          const dir = btn.dataset.qmove==='up' ? -1 : 1;
+          const swapIdx = idx+dir;
+          if(idx<0 || swapIdx<0 || swapIdx>=arr.length) return;
+          [arr[idx], arr[swapIdx]] = [arr[swapIdx], arr[idx]];
+          queues[teamId] = arr;
+          await saveQueueOrder(teamId, arr);
+          renderQueueForTeam();
+        };
+      });
+      list.querySelectorAll('button[data-qremove]').forEach(btn=>{
+        btn.onclick = async ()=>{
+          const pid = btn.dataset.qremove;
+          await sb.from('queues').delete().eq('team_id', teamId).eq('player_id', pid);
+          queues[teamId] = (queues[teamId]||[]).filter(id=>id!==pid);
+          renderQueueForTeam();
+        };
+      });
+    }
   }
   teamSelect.addEventListener('change', renderQueueForTeam);
   renderQueueForTeam();
@@ -1111,10 +1396,12 @@ function buildQueuePanel(){
   panel.querySelector('#queueAddBtn').onclick = async ()=>{
     const teamId = teamSelect.value;
     const pid = panel.querySelector('#queueAddSelect').value;
-    if(!teamId || !pid) return;
+    if(!teamId || !pid || !canEditSelected()) return;
+    const rank = (queues[teamId]||[]).length;
+    const { error } = await sb.from('queues').insert({ team_id: teamId, player_id: pid, rank });
+    if(error){ console.error(error); return; }
     if(!queues[teamId]) queues[teamId] = [];
-    if(!queues[teamId].includes(pid)) queues[teamId].push(pid);
-    await sSet('league-queues', queues);
+    queues[teamId].push(pid);
     renderQueueForTeam();
   };
 
@@ -1211,7 +1498,8 @@ function renderDraft(){
     panel.className='panel';
     panel.innerHTML = `
       <h2>Player Pool</h2>
-      <div class="sub">Add eligible players before the draft. Only add players who fit your league's rules (e.g. actual backup QBs).</div>
+      <div class="sub">${unlocked ? "Add eligible players before the draft. Only add players who fit your league's rules (e.g. actual backup QBs)." : "Only the commissioner can manage the player pool."}</div>
+      ${unlocked ? `
       <div class="row">
         <div class="field"><label>Name</label><input type="text" id="pName" placeholder="Jacoby Brissett"></div>
         <div class="field" style="max-width:110px;"><label>Position</label>
@@ -1222,62 +1510,72 @@ function renderDraft(){
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--chalk);"><input type="checkbox" id="pThird" style="width:auto;"> 3rd-string QB (1.5x)</label>
         </div>
       </div>
-      <button class="btn" id="addPlayer">Add Player</button>
+      <button class="btn" id="addPlayer">Add Player</button>` : ''}
       <div class="player-grid" id="poolGrid" style="margin-top:16px;"></div>
     `;
     area.appendChild(panel);
 
-    const bulkPanel = document.createElement('div');
-    bulkPanel.className='panel';
-    bulkPanel.innerHTML = `
-      <h2>Bulk Import</h2>
-      <div class="sub">One player per line: <code>Name, POS, TEAM</code>. Pre-filled with each team's backup (and 3rd-string) QB, current placekicker — both from <a href="https://www.ourlads.com/nfldepthcharts/depthchartpos/QB" target="_blank" style="color:var(--gold-bright);">Ourlads' depth charts</a> — and all 32 defense/special-teams units. Defenses aren't drafted from any depth chart (they're whole-team units in every fantasy format), so those 32 are just the standard team list, not Ourlads-sourced. Edit the list to fit your rules, then add.</div>
-      <textarea id="bulkText" rows="10" style="font-family:'IBM Plex Mono',monospace; font-size:12.5px;">${DEFAULT_BULK}</textarea>
-      <div style="margin-top:10px;"><button class="btn" id="bulkAdd">Add All</button></div>
-    `;
-    area.appendChild(bulkPanel);
-    bulkPanel.querySelector('#bulkAdd').onclick = async ()=>{
-      const lines = bulkPanel.querySelector('#bulkText').value.split('\n').map(l=>l.trim()).filter(Boolean);
-      lines.forEach(line=>{
-        const parts = line.split(',').map(p=>p.trim());
-        if(parts.length<2) return;
-        const [name, pos, nflTeam, flag] = parts;
-        if(!name) return;
-        const thirdString = !!(flag && /3rd|third/i.test(flag));
-        players.push({id:uid(), name, pos:(pos||'QB').toUpperCase(), nflTeam:nflTeam||'', thirdString});
-      });
-      await sSet('league-players', players);
-      renderDraft();
-    };
+    if(unlocked){
+      const bulkPanel = document.createElement('div');
+      bulkPanel.className='panel';
+      bulkPanel.innerHTML = `
+        <h2>Bulk Import</h2>
+        <div class="sub">One player per line: <code>Name, POS, TEAM</code>. Pre-filled with each team's backup (and 3rd-string) QB, current placekicker — both from <a href="https://www.ourlads.com/nfldepthcharts/depthchartpos/QB" target="_blank" style="color:var(--gold-bright);">Ourlads' depth charts</a> — and all 32 defense/special-teams units. Defenses aren't drafted from any depth chart (they're whole-team units in every fantasy format), so those 32 are just the standard team list, not Ourlads-sourced. Edit the list to fit your rules, then add.</div>
+        <textarea id="bulkText" rows="10" style="font-family:'IBM Plex Mono',monospace; font-size:12.5px;">${DEFAULT_BULK}</textarea>
+        <div style="margin-top:10px;"><button class="btn" id="bulkAdd">Add All</button></div>
+      `;
+      area.appendChild(bulkPanel);
+      bulkPanel.querySelector('#bulkAdd').onclick = async ()=>{
+        const lines = bulkPanel.querySelector('#bulkText').value.split('\n').map(l=>l.trim()).filter(Boolean);
+        const rows = [];
+        lines.forEach(line=>{
+          const parts = line.split(',').map(p=>p.trim());
+          if(parts.length<2) return;
+          const [name, pos, nflTeam, flag] = parts;
+          if(!name) return;
+          const thirdString = !!(flag && /3rd|third/i.test(flag));
+          rows.push({ league_id: LEAGUE_ID, name, pos:(pos||'QB').toUpperCase(), nfl_team:nflTeam||'', third_string:thirdString });
+        });
+        if(rows.length){
+          const { error } = await sb.from('players').insert(rows);
+          if(error){ alert(error.message); return; }
+        }
+        await loadPlayers();
+        renderDraft();
+      };
+    }
 
     const orderPanel = document.createElement('div');
     orderPanel.className='panel';
     const canStart = league.teams.length>=2 && players.length>0;
     const schedTxt = league.draftScheduledAt
-      ? `<div class="countdown-big" id="scheduledCountdown" style="margin:6px 0 12px;"></div><div class="sub" style="margin-top:0;">Scheduled for ${new Date(league.draftScheduledAt).toLocaleString()}. It'll start automatically for everyone at that time — or the commissioner can start it early below.</div>`
+      ? `<div class="countdown-big" id="scheduledCountdown" style="margin:6px 0 12px;"></div><div class="sub" style="margin-top:0;">Scheduled for ${new Date(league.draftScheduledAt).toLocaleString()}. It'll start automatically for everyone at that time — or start it early below.</div>`
       : `<div class="sub">No draft time scheduled yet — set one in Rules & Teams → Draft Settings, or start manually now.</div>`;
     orderPanel.innerHTML = `
       <h2>Draft Room</h2>
       ${schedTxt}
       <div class="sub">Order: ${league.draftOrderMethod==='manual' ? 'manual (set in Draft Settings)' : 'randomized when the draft starts'} · Type: ${league.draftType==='standard'?'Standard (same order every round)':'Snake (order reverses each round)'} · Time per pick: ${league.pickTimeSeconds ? league.pickTimeSeconds+' sec' : 'No limit'}.
-      ${league.teams.length<2?' Add at least 2 teams first.':''} ${players.length===0?' Add at least one player to the pool first.':''}</div>
+      ${league.teams.length<2?' Add at least 2 teams first.':''} ${players.length===0?' Add at least one player to the pool first.':''} ${league.teams.length>0 && league.teams.length<4 ? ' Fewer than 4 teams — consider inviting more before you start.':''}</div>
       <button class="btn" id="startDraft" ${canStart?'':'disabled'}>Start Draft Now</button>
     `;
     area.appendChild(orderPanel);
     updateClockDisplays();
 
-    document.getElementById('addPlayer').onclick = async ()=>{
-      const name = document.getElementById('pName').value.trim();
-      const pos = document.getElementById('pPos').value;
-      const nflTeam = document.getElementById('pTeam').value.trim();
-      const thirdString = document.getElementById('pThird').checked;
-      if(!name) return;
-      players.push({id:uid(), name, pos, nflTeam, thirdString});
-      document.getElementById('pName').value=''; document.getElementById('pTeam').value='';
-      document.getElementById('pThird').checked=false;
-      await sSet('league-players', players);
-      renderDraft();
-    };
+    if(unlocked){
+      document.getElementById('addPlayer').onclick = async ()=>{
+        const name = document.getElementById('pName').value.trim();
+        const pos = document.getElementById('pPos').value;
+        const nflTeam = document.getElementById('pTeam').value.trim();
+        const thirdString = document.getElementById('pThird').checked;
+        if(!name) return;
+        const { error } = await sb.from('players').insert({ league_id: LEAGUE_ID, name, pos, nfl_team:nflTeam, third_string:thirdString });
+        if(error){ alert(error.message); return; }
+        document.getElementById('pName').value=''; document.getElementById('pTeam').value='';
+        document.getElementById('pThird').checked=false;
+        await loadPlayers();
+        renderDraft();
+      };
+    }
     document.getElementById('startDraft').onclick = async ()=>{ await startDraftNow(); };
 
     const grid = document.getElementById('poolGrid');
@@ -1286,14 +1584,16 @@ function renderDraft(){
       const c = document.createElement('div');
       c.className='player-card';
       c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold);color:var(--gold-bright);">3RD · 1.5x</span>':''}</div>`;
-      const rm = document.createElement('button');
-      rm.className='btn danger'; rm.textContent='Remove';
-      rm.onclick = async ()=>{
-        players = players.filter(x=>x.id!==p.id);
-        await sSet('league-players', players);
-        renderDraft();
-      };
-      c.appendChild(rm);
+      if(unlocked){
+        const rm = document.createElement('button');
+        rm.className='btn danger'; rm.textContent='Remove';
+        rm.onclick = async ()=>{
+          await sb.from('players').delete().eq('id', p.id);
+          await loadPlayers();
+          renderDraft();
+        };
+        c.appendChild(rm);
+      }
       grid.appendChild(c);
     });
     return;
@@ -1368,12 +1668,13 @@ function renderDraft(){
 
   const resetPanel = document.createElement('div');
   resetPanel.className='panel';
-  resetPanel.innerHTML = `<button class="btn ghost" id="resetDraft">Reset Draft</button> <span style="color:var(--muted);font-size:12px;">Clears all picks and returns to setup.</span>`;
+  resetPanel.innerHTML = `<button class="btn ghost" id="resetDraft" ${unlocked?'':'disabled'}>Reset Draft</button> <span style="color:var(--muted);font-size:12px;">Clears all picks and returns to setup.${unlocked?'':' (Commissioner only.)'}</span>`;
   area.appendChild(resetPanel);
   resetPanel.querySelector('#resetDraft').onclick = async ()=>{
-    league.draftStarted = false; league.currentPick = 0; league.picks = [];
-    league.draftPaused = false; league.currentPickDeadline = null; league.pausedRemainingMs = null;
-    await sSet('league-data', league);
+    if(!unlocked) return;
+    await sb.from('picks').delete().eq('league_id', LEAGUE_ID);
+    await sb.from('draft_runtime').update({ draft_started:false, draft_paused:false, current_pick_deadline:null, paused_remaining_ms:null }).eq('league_id', LEAGUE_ID);
+    await loadAllLeagueData();
     renderDraft(); renderRosters(); renderStandings();
   };
 }
@@ -1451,9 +1752,10 @@ function renderStandings(){
     entryDiv.querySelectorAll('input[data-player]').forEach(inp=>{
       inp.addEventListener('change', async ()=>{
         const wk2 = weekInput.value;
+        const val = parseFloat(inp.value)||0;
         if(!scores[wk2]) scores[wk2] = {};
-        scores[wk2][inp.dataset.player] = parseFloat(inp.value)||0;
-        await sSet('league-scores', scores);
+        scores[wk2][inp.dataset.player] = val;
+        await sb.from('scores').upsert({ league_id: LEAGUE_ID, week: wk2, player_id: inp.dataset.player, points: val });
         renderTable();
       });
     });
@@ -1488,7 +1790,8 @@ function renderStandings(){
         scores[wk][p.id] = computePoints(s);
       });
 
-      await sSet('league-scores', scores);
+      const scoreRows = Object.keys(scores[wk]).map(pid=>({ league_id: LEAGUE_ID, week: wk, player_id: pid, points: scores[wk][pid] }));
+      if(scoreRows.length) await sb.from('scores').upsert(scoreRows);
       statusEl.textContent = unmatched.length
         ? `Done, but couldn't match: ${unmatched.join(', ')} — enter those manually below.`
         : 'All players matched and scored.';
@@ -1562,7 +1865,9 @@ function renderStandings(){
     if(dup){ msgEl.style.color='var(--red)'; msgEl.textContent = "Same player can't start in two slots."; return; }
     if(!lineups[wk]) lineups[wk] = {};
     lineups[wk][teamId] = entry;
-    await sSet('league-lineups', lineups);
+    await sb.from('lineups').delete().eq('league_id', LEAGUE_ID).eq('week', wk).eq('team_id', teamId);
+    const rows = Object.keys(entry).map(slotId=>({ league_id: LEAGUE_ID, week: wk, team_id: teamId, slot_id: slotId, player_id: entry[slotId] }));
+    if(rows.length) await sb.from('lineups').insert(rows);
     msgEl.style.color='var(--muted)'; msgEl.textContent = 'Lineup saved for week '+wk+'.';
     renderTable();
   });
@@ -1664,13 +1969,15 @@ document.getElementById('sendChat').addEventListener('click', async ()=>{
   const author = document.getElementById('chatAuthor').value.trim() || 'Anonymous';
   const text = document.getElementById('chatText').value.trim();
   if(!text) return;
-  chat.push({id:uid(), author, text, ts:Date.now()});
+  const { error } = await sb.from('chat_messages').insert({ league_id: LEAGUE_ID, author, text });
+  if(error){ console.error(error); return; }
   document.getElementById('chatText').value='';
-  await sSet('league-chat', chat);
+  await loadChatData();
   renderChat();
 });
 function renderChat(){
   const el = document.getElementById('chatList');
+  if(!el) return;
   if(chat.length===0){ el.innerHTML='<div class="empty">No trash talk yet. Be the first.</div>'; return; }
   el.innerHTML = [...chat].reverse().map(m=>{
     const d = new Date(m.ts);
@@ -1678,47 +1985,123 @@ function renderChat(){
   }).join('');
 }
 
-// ---------- realtime sync ----------
-function subscribeRealtime(){
-  sb.channel('league-live-sync')
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'league_kv' }, payload => {
-      handleRealtimeChange(payload);
-    })
-    .subscribe();
+// ---------- commissioner tab ----------
+function renderCommissionerTab(){
+  const area = document.getElementById('commissionerArea');
+  if(!area) return;
+  area.innerHTML = '';
+  if(!unlocked){ area.innerHTML = '<div class="panel"><div class="empty">Commissioner only.</div></div>'; return; }
+
+  const linkPanel = document.createElement('div');
+  linkPanel.className = 'panel';
+  const inviteUrl = location.origin + location.pathname + '?league=' + LEAGUE_ID;
+  linkPanel.innerHTML = `
+    <h2>Invite Link</h2>
+    <div class="sub">Share this link — anyone who opens it can log in and join ${esc(leagueRow.name)}.</div>
+    <div class="invite-link-box"><code id="inviteLinkText">${esc(inviteUrl)}</code><button class="btn ghost" id="copyInviteBtn">Copy</button></div>
+    <h2 style="margin-top:6px;">Invite by Email</h2>
+    <div class="sub">Sends a magic-link login email addressed straight to your league (${members.length}/10 members).</div>
+    <div class="row">
+      <div class="field"><label>Email</label><input type="text" id="inviteEmail" placeholder="friend@example.com"></div>
+      <div class="field"><label>Suggested team name (optional)</label><input type="text" id="inviteTeamName" placeholder="The Clipboard Crew"></div>
+    </div>
+    <button class="btn" id="sendInviteBtn" ${members.length>=10?'disabled':''}>Send Invite</button>
+    <div id="inviteMsg" style="font-size:12px; color:var(--muted); margin-top:8px;"></div>
+  `;
+  area.appendChild(linkPanel);
+  linkPanel.querySelector('#copyInviteBtn').onclick = async ()=>{
+    try{
+      await navigator.clipboard.writeText(inviteUrl);
+      const btn = linkPanel.querySelector('#copyInviteBtn');
+      btn.textContent = 'Copied!'; setTimeout(()=>{ btn.textContent='Copy'; }, 1500);
+    }catch(e){ /* clipboard may be blocked; the link is still selectable text */ }
+  };
+  linkPanel.querySelector('#sendInviteBtn').onclick = async ()=>{
+    const email = linkPanel.querySelector('#inviteEmail').value.trim();
+    const teamName = linkPanel.querySelector('#inviteTeamName').value.trim();
+    const msg = linkPanel.querySelector('#inviteMsg');
+    if(!email){ msg.textContent = 'Enter an email address.'; return; }
+    if(members.length>=10){ msg.textContent = 'This league already has the maximum of 10 members.'; return; }
+    msg.textContent = 'Sending…';
+    const { error: memberError } = await sb.from('league_members').upsert(
+      { league_id: LEAGUE_ID, email, suggested_team_name: teamName||null }, { onConflict:'league_id,email' }
+    );
+    if(memberError){ msg.textContent = memberError.message; return; }
+    const { error: otpError } = await sb.auth.signInWithOtp({ email, options:{ emailRedirectTo: inviteUrl } });
+    msg.textContent = otpError ? ('Invite saved, but the email failed to send: '+otpError.message) : `Invite sent to ${email}.`;
+    await loadMembers();
+    renderCommissionerTab();
+  };
+
+  const memberPanel = document.createElement('div');
+  memberPanel.className = 'panel';
+  memberPanel.innerHTML = `<h2>Members</h2><div class="sub">Everyone who's been invited or joined.</div><div id="memberList"></div>`;
+  area.appendChild(memberPanel);
+  const listEl = memberPanel.querySelector('#memberList');
+  if(members.length===0){ listEl.innerHTML = '<div class="empty">No members yet — invite your first friend above.</div>'; }
+  else{
+    listEl.innerHTML = members.map(m=>`
+      <div class="member-row">
+        <span>${esc(m.email)}${m.suggested_team_name?` <span style="color:var(--muted);font-size:12px;">(${esc(m.suggested_team_name)})</span>`:''}</span>
+        <span><span class="badge ${m.status}">${m.status==='joined'?'Joined':'Pending'}</span>${m.status==='pending' ? ` <button class="btn danger" data-revoke="${esc(m.email)}">Revoke</button>` : ''}</span>
+      </div>`).join('');
+    listEl.querySelectorAll('button[data-revoke]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        await sb.from('league_members').delete().eq('league_id', LEAGUE_ID).eq('email', btn.dataset.revoke);
+        await loadMembers();
+        renderCommissionerTab();
+      };
+    });
+  }
 }
 
-function handleRealtimeChange(payload){
-  const row = (payload.new && payload.new.key) ? payload.new : payload.old;
-  if(!row || !row.key) return;
-  let val = null;
-  if(payload.new && payload.new.value){
-    try{ val = JSON.parse(payload.new.value); }catch(e){ return; }
-  }
-  switch(row.key){
-    case 'league-data':
-      if(val){ league = normalizeLeague(val); renderLineupSummary(); renderTeams(); renderDraft(); renderRosters(); renderStandings(); }
+// ---------- realtime sync ----------
+function subscribeRealtime(){
+  const ch = sb.channel('league-'+LEAGUE_ID);
+  ch.on('postgres_changes', { event:'*', schema:'public', table:'leagues', filter:`id=eq.${LEAGUE_ID}` }, p=>handleRealtimeChange('leagues', p));
+  ['league_settings','draft_runtime','teams','players','picks','queues','scores','lineups','chat_messages'].forEach(table=>{
+    ch.on('postgres_changes', { event:'*', schema:'public', table, filter:`league_id=eq.${LEAGUE_ID}` }, p=>handleRealtimeChange(table, p));
+  });
+  ch.on('postgres_changes', { event:'*', schema:'public', table:'league_members', filter:`league_id=eq.${LEAGUE_ID}` }, ()=>{
+    if(unlocked) loadMembers().then(renderCommissionerTab);
+  });
+  ch.subscribe();
+}
+
+async function handleRealtimeChange(table, payload){
+  switch(table){
+    case 'leagues':
+      if(payload.new){
+        leagueRow = payload.new; league.commissioner_user_id = payload.new.commissioner_user_id; league.name = payload.new.name;
+        updateUnlocked(); recomputeMyTeam(); renderAll();
+      }
       break;
-    case 'league-players':
-      if(val){ players = val; renderDraft(); renderRosters(); renderStandings(); }
+    case 'league_settings':
+      if(payload.new){ applySettingsRow(payload.new); renderLineupSummary(); renderDraft(); }
       break;
-    case 'league-queues':
-      if(val){ queues = val; renderDraft(); }
+    case 'draft_runtime':
+      if(payload.new){ applyRuntimeRow(payload.new); renderDraft(); renderRosters(); renderStandings(); }
       break;
-    case 'league-pin':
-      commissionerPin = val;
-      renderLock();
+    case 'teams':
+      await loadTeams(); recomputeMyTeam(); renderTeams(); renderDraft(); renderRosters(); renderStandings();
       break;
-    case 'league-scores':
-      if(val){ scores = val; renderStandings(); }
+    case 'players':
+      await loadPlayers(); renderDraft(); renderRosters(); renderStandings();
       break;
-    case 'league-lineups':
-      if(val){ lineups = val; renderStandings(); }
+    case 'picks':
+      await loadPicks(); renderDraft(); renderRosters(); renderStandings();
       break;
-    case 'league-chat':
-      if(val){ chat = val; renderChat(); }
+    case 'queues':
+      await loadQueuesData(); renderDraft();
       break;
-    case 'league-weights':
-      if(val){ weights = val; renderWeights(); }
+    case 'scores':
+      await loadScoresData(); renderStandings();
+      break;
+    case 'lineups':
+      await loadLineupsData(); renderStandings();
+      break;
+    case 'chat_messages':
+      await loadChatData(); renderChat();
       break;
   }
 }
@@ -1728,7 +2111,7 @@ if(SUPABASE_URL.includes('YOUR_SUPABASE') || SUPABASE_ANON_KEY.includes('YOUR_SU
     '<h2 style="color:#F2C14E;">Supabase not configured</h2>' +
     '<p>Open index.html and set SUPABASE_URL and SUPABASE_ANON_KEY near the top of the &lt;script&gt; tag. See README.md for the full setup steps.</p></div>';
 } else {
-  loadAll();
+  boot();
 }
 </script>
 </body>
