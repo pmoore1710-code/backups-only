@@ -736,6 +736,23 @@ async function boot(){
 }
 
 // ---------- alternate screens (no league selected / league not found / first-login setup) ----------
+async function findMyLeagues(){
+  if(!session) return [];
+  const [{ data: commissioned }, { data: myTeams }] = await Promise.all([
+    sb.from('leagues').select('id,name').eq('commissioner_user_id', session.user.id),
+    sb.from('teams').select('league_id').eq('owner_user_id', session.user.id)
+  ]);
+  const seen = new Set();
+  const result = [];
+  (commissioned||[]).forEach(l=>{ if(!seen.has(l.id)){ seen.add(l.id); result.push({ id:l.id, name:l.name, role:'Commissioner' }); } });
+  const teamLeagueIds = [...new Set((myTeams||[]).map(t=>t.league_id))].filter(id=>!seen.has(id));
+  if(teamLeagueIds.length){
+    const { data: teamLeagues } = await sb.from('leagues').select('id,name').in('id', teamLeagueIds);
+    (teamLeagues||[]).forEach(l=>{ if(!seen.has(l.id)){ seen.add(l.id); result.push({ id:l.id, name:l.name, role:'Member' }); } });
+  }
+  return result;
+}
+
 async function renderLanding(){
   document.getElementById('appShell').style.display = 'none';
   const el = document.getElementById('altScreen');
@@ -746,7 +763,7 @@ async function renderLanding(){
         <h1 class="brand" style="text-align:center;font-size:44px;">START OR JOIN <span>A LEAGUE</span></h1>
         <div class="panel">
           <h2>Log In</h2>
-          <div class="sub">Log in with a magic link to create your own league — or open the invite link a commissioner sent you to join theirs.</div>
+          <div class="sub">Log in with a magic link to get back to your league — or create a new one. If you're joining someone else's league for the first time, use the invite link they sent you instead of this page.</div>
           <div class="row">
             <div class="field"><input type="text" id="landingEmail" placeholder="you@example.com"></div>
             <div class="field" style="max-width:180px;"><button class="btn" id="landingLoginBtn" style="width:100%;">Send Magic Link</button></div>
@@ -764,13 +781,29 @@ async function renderLanding(){
     };
     return;
   }
+
+  const myLeagues = await findMyLeagues();
+  if(myLeagues.length===1){
+    location.search = '?league='+myLeagues[0].id;
+    return;
+  }
+
   const hasLegacy = await legacyHasData();
+  const myLeaguesHtml = myLeagues.length ? `
+      <div class="panel">
+        <h2>Your Leagues</h2>
+        <div class="sub">Signed in as ${esc(session.user.email)}.</div>
+        <ul class="plain">
+          ${myLeagues.map(l=>`<li class="list-row"><span><strong>${esc(l.name)}</strong> <span style="color:var(--muted);font-size:12px;">— ${esc(l.role)}</span></span><a class="btn ghost" href="?league=${esc(l.id)}">Open</a></li>`).join('')}
+        </ul>
+      </div>` : '';
   el.innerHTML = `
     <div class="landing-wrap">
       <div class="eyebrow" style="text-align:center;">BACKUPS ONLY LEAGUE</div>
-      <h1 class="brand" style="text-align:center;font-size:44px;">CREATE <span>A LEAGUE</span></h1>
+      <h1 class="brand" style="text-align:center;font-size:44px;">${myLeagues.length?'YOUR ':''}LEAGUE${myLeagues.length?'S':''}${myLeagues.length?'':' <span>CREATE</span>'}</h1>
+      ${myLeaguesHtml}
       <div class="panel">
-        <h2>Signed in as ${esc(session.user.email)}</h2>
+        <h2>${myLeagues.length ? 'Create Another League' : 'Signed in as '+esc(session.user.email)}</h2>
         <div class="sub">Name your league — you'll be its commissioner.</div>
         <div class="field"><input type="text" id="newLeagueName" placeholder="The Clipboard Crew League"></div>
         ${hasLegacy ? `<div class="field"><label style="display:flex;align-items:center;gap:6px;color:var(--chalk);"><input type="checkbox" id="importLegacyCheck" style="width:auto;" checked> Import this site's existing rules, scoring settings, and player pool</label></div>` : ''}
