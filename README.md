@@ -10,7 +10,9 @@ Three steps: **database → code → hosting**. About 15 minutes total, all free
 
 1. Go to https://supabase.com, sign up free, and create a new project (pick any name/region).
 2. Once it's ready, open the **SQL Editor** (left sidebar) → **New Query**.
-3. Paste in the contents of `supabase-schema.sql` (included in this folder) and click **Run**.
+3. Paste in the contents of `supabase-schema.sql` (included in this folder) and click **Run**. (Already set up on an
+   older version of the site? Re-run this file — it's safe to run again, and it's what turns on the real-time sync
+   the Live Draft Room needs.)
 4. Go to **Project Settings → API**. You'll need two values from this page in the next step:
    - **Project URL**
    - **anon public** key

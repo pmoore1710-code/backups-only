@@ -20,3 +20,16 @@ create policy "Allow anon write" on league_kv
 
 create policy "Allow anon update" on league_kv
   for update using (true);
+
+-- Realtime sync: lets every connected screen get pushed updates instantly
+-- (used by the Live Draft Room's pick clock, draft board, and queue). Safe to
+-- re-run — only adds the table to the publication if it isn't already there.
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'league_kv'
+  ) then
+    alter publication supabase_realtime add table league_kv;
+  end if;
+end $$;
