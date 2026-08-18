@@ -906,9 +906,96 @@ async function findMyLeagues(){
   return result;
 }
 
+// ---------- home page: About + site-wide weekly highlights ----------
+function aboutSectionHtml(){
+  return `
+    <div class="panel">
+      <h2>About</h2>
+      <div class="sub">More info coming soon.</div>
+    </div>`;
+}
+
+async function computeHomeStats(){
+  const { data: allScores } = await sb.from('scores').select('week');
+  if(!allScores || allScores.length===0) return null;
+  const latestWeek = allScores.reduce((max,r)=> (parseInt(r.week)||0) > (parseInt(max)||0) ? r.week : max, allScores[0].week);
+
+  const [{ data: scoreRows }, { data: leagueRows }] = await Promise.all([
+    sb.from('scores').select('league_id,player_id,points').eq('week', latestWeek),
+    sb.from('leagues').select('id,name')
+  ]);
+  const leagueIds = [...new Set((scoreRows||[]).map(s=>s.league_id))];
+  const [{ data: playerRows }, { data: lineupRows }, { data: teamRows }] = await Promise.all([
+    sb.from('players').select('id,league_id,name,pos,nfl_team,third_string').in('league_id', leagueIds.length?leagueIds:['__none__']),
+    sb.from('lineups').select('league_id,team_id,slot_id,player_id').eq('week', latestWeek),
+    sb.from('teams').select('id,league_id,name')
+  ]);
+
+  const leagueById = {}; (leagueRows||[]).forEach(l=>leagueById[l.id]=l);
+  const playerById = {}; (playerRows||[]).forEach(p=>playerById[p.id]=p);
+  const teamById = {}; (teamRows||[]).forEach(t=>teamById[t.id]=t);
+
+  function top3ByPos(pos){
+    return (scoreRows||[])
+      .map(s=>({ player: playerById[s.player_id], points: Number(s.points)||0 }))
+      .filter(x=>x.player && x.player.pos===pos)
+      .map(x=>({ ...x, adjPoints: x.points * (x.player.third_string?1.5:1), league: leagueById[x.player.league_id] }))
+      .sort((a,b)=>b.adjPoints-a.adjPoints)
+      .slice(0,3);
+  }
+
+  const scoreByPlayer = {}; (scoreRows||[]).forEach(s=>{ scoreByPlayer[s.player_id] = Number(s.points)||0; });
+  const teamTotals = {};
+  (lineupRows||[]).forEach(l=>{
+    if(!l.player_id) return;
+    const p = playerById[l.player_id];
+    if(!p) return;
+    const raw = scoreByPlayer[l.player_id] || 0;
+    const mult = p.third_string ? 1.5 : 1;
+    teamTotals[l.team_id] = (teamTotals[l.team_id]||0) + raw*mult;
+  });
+  const teamTotalsList = Object.keys(teamTotals).map(teamId=>({
+    team: teamById[teamId], league: teamById[teamId] ? leagueById[teamById[teamId].league_id] : null, total: teamTotals[teamId]
+  })).filter(x=>x.team).sort((a,b)=>a.total-b.total);
+
+  const multiLeague = (leagueRows||[]).length > 1;
+  const kevList = multiLeague ? teamTotalsList.slice(0,3) : teamTotalsList.slice(0,1);
+
+  return { latestWeek, multiLeague, kevList, topQB: top3ByPos('QB'), topK: top3ByPos('K'), topDEF: top3ByPos('DEF') };
+}
+
+async function homeStatsHtml(){
+  const stats = await computeHomeStats();
+  if(!stats){
+    return `<div class="panel"><h2>Week Highlights</h2><div class="empty">No scores recorded yet — check back after the first week.</div></div>`;
+  }
+  const { latestWeek, multiLeague, kevList, topQB, topK, topDEF } = stats;
+  const leagueTag = (l) => multiLeague ? ` <span style="color:var(--muted);font-size:12px;">— ${esc(l?.name||'')}</span>` : '';
+  const kevRows = kevList.length
+    ? kevList.map(k=>`<li class="list-row"><span><strong>${esc(k.team.name)}</strong>${leagueTag(k.league)}</span><span>${k.total.toFixed(1)} pts</span></li>`).join('')
+    : '<div class="empty">No lineups were set last week.</div>';
+  const posRows = (list) => list.length
+    ? `<ul class="plain">${list.map(x=>`<li class="list-row"><span><span class="chip pos-${x.player.pos}">${x.player.pos}</span> ${esc(x.player.name)}${leagueTag(x.league)}</span><span>${x.adjPoints.toFixed(1)} pts</span></li>`).join('')}</ul>`
+    : '<div class="empty">No data.</div>';
+  return `
+    <div class="panel">
+      <h2>Week ${esc(String(latestWeek))} Highlights</h2>
+      <div class="sub">${multiLeague ? 'Kev of the Week — Bottom 3' : 'Kev of the Week'}</div>
+      <ul class="plain">${kevRows}</ul>
+      <div class="sub" style="margin-top:16px;">Top 3 QBs</div>
+      ${posRows(topQB)}
+      <div class="sub" style="margin-top:16px;">Top 3 Kickers</div>
+      ${posRows(topK)}
+      <div class="sub" style="margin-top:16px;">Top 3 Defenses</div>
+      ${posRows(topDEF)}
+    </div>`;
+}
+
 async function renderLanding(){
   document.getElementById('appShell').style.display = 'none';
   const el = document.getElementById('altScreen');
+  const statsHtml = await homeStatsHtml();
+
   if(!session){
     el.innerHTML = `
       <div class="landing-wrap">
@@ -919,6 +1006,8 @@ async function renderLanding(){
           <div class="sub">Log in to get back to your league, or sign up to create a new one. If you're joining someone else's league for the first time, sign up with the same email they invited.</div>
           ${authFormHtml('landing')}
         </div>
+        ${aboutSectionHtml()}
+        ${statsHtml}
       </div>`;
     wireAuthForm('landing', onAuthChanged);
     return;
@@ -953,6 +1042,8 @@ async function renderLanding(){
         <div id="createLeagueMsg" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
       </div>
       <div style="text-align:center;"><button class="btn ghost" id="landingLogoutBtn">Log Out</button></div>
+      ${aboutSectionHtml()}
+      ${statsHtml}
     </div>`;
   document.getElementById('landingLogoutBtn').onclick = async ()=>{ await sb.auth.signOut(); };
   document.getElementById('createLeagueBtn').onclick = async ()=>{
