@@ -722,9 +722,36 @@ async function onAuthChanged(){
 
 sb.auth.onAuthStateChange((event, sess)=>{
   session = sess;
+  if(event === 'PASSWORD_RECOVERY'){ renderPasswordRecovery(); return; }
   if(!appReady) return; // the initial getSession() + boot() sequence below handles the first state
   onAuthChanged();
 });
+
+function renderPasswordRecovery(){
+  document.getElementById('appShell').style.display = 'none';
+  document.getElementById('altScreen').innerHTML = `
+    <div class="landing-wrap">
+      <div class="eyebrow" style="text-align:center;">BACKUPS ONLY LEAGUE</div>
+      <h1 class="brand" style="text-align:center;font-size:44px;">SET A NEW <span>PASSWORD</span></h1>
+      <div class="panel">
+        <div class="sub">Choose a new password for ${esc(session?.user?.email||'your account')}.</div>
+        <div class="field"><label>New password</label><input type="password" id="recoveryPassword" placeholder="New password"></div>
+        <button class="btn" id="recoverySubmit" style="width:100%;">Set Password &amp; Continue</button>
+        <div id="recoveryMsg" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
+      </div>
+    </div>`;
+  document.getElementById('recoverySubmit').onclick = async ()=>{
+    const password = document.getElementById('recoveryPassword').value;
+    const msg = document.getElementById('recoveryMsg');
+    if(!password || password.length<6){ msg.textContent = 'Password must be at least 6 characters.'; return; }
+    msg.textContent = 'Saving…';
+    const { error } = await sb.auth.updateUser({ password });
+    if(error){ msg.textContent = error.message; return; }
+    appReady = true;
+    LEAGUE_ID = new URLSearchParams(location.search).get('league');
+    if(!LEAGUE_ID){ renderLanding(); } else { await enterLeague(); }
+  };
+}
 
 async function boot(){
   const { data } = await sb.auth.getSession();
@@ -748,6 +775,7 @@ function authFormHtml(idPrefix){
       <div class="field"><label>Password</label><input type="password" id="${idPrefix}Password" placeholder="Password"></div>
     </div>
     <button class="btn" id="${idPrefix}Submit" style="width:100%;">Log In</button>
+    <div style="text-align:right;margin-top:6px;"><a href="#" id="${idPrefix}ForgotLink" style="font-size:12px;color:var(--muted);">Forgot password?</a></div>
     <div id="${idPrefix}Msg" style="font-size:12px;color:var(--muted);margin-top:8px;"></div>
   `;
 }
@@ -770,6 +798,19 @@ function wireAuthForm(idPrefix, onSuccess){
   }
   loginModeBtn.onclick = ()=>setMode('login');
   signupModeBtn.onclick = ()=>setMode('signup');
+
+  const forgotLink = document.getElementById(idPrefix+'ForgotLink');
+  if(forgotLink){
+    forgotLink.onclick = async (e)=>{
+      e.preventDefault();
+      const email = emailInput.value.trim();
+      if(!email){ msg.textContent = 'Enter your email above first.'; return; }
+      msg.textContent = 'Sending password reset email…';
+      const redirectTo = location.origin + location.pathname + (LEAGUE_ID ? ('?league='+LEAGUE_ID) : '');
+      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo });
+      msg.textContent = error ? error.message : `Check ${email} for a password reset link.`;
+    };
+  }
 
   submitBtn.onclick = async ()=>{
     const email = emailInput.value.trim();
