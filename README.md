@@ -22,17 +22,18 @@ Four steps: **database → auth → code → hosting**. About 20 minutes total, 
 
 ## 2. Turn on login (Supabase Auth)
 
-This app uses **magic-link email login** — no passwords, Supabase just emails a one-click sign-in
-link. It's built into every Supabase project for free.
+This app uses plain **email + password** login — no emails need to be sent or delivered for
+login or invites to work, which sidesteps Supabase's free-tier email rate limits entirely.
 
 1. In your Supabase project, go to **Authentication → Providers**, and make sure **Email** is
    enabled (it usually is by default).
-2. Go to **Authentication → URL Configuration**. Add your site's URL (the one you'll get in step 4
-   below, e.g. `https://your-league.vercel.app`) to **Redirect URLs**. Until you have that URL, you
-   can leave this as the default `localhost` and come back to update it after step 4 — magic links
-   just won't work correctly until this is set to your real deployed URL.
-3. Optional: **Authentication → Email Templates** lets you customize the wording of the login email
-   (e.g. change "Magic Link" branding). Not required to get started.
+2. On that same Email provider settings screen, find **"Confirm email"** and turn it **off**.
+   With it on, a new account can't log in until it clicks a confirmation link Supabase emails —
+   which brings back the exact email dependency this setup avoids. With it off, signing up logs
+   you straight in.
+3. That's it — no redirect URLs or SMTP setup needed for the core app to work. (You can still set
+   up custom SMTP later if you want password-reset emails or nicer branding, but nothing here
+   requires it.)
 
 ## 3. Configure the code
 
@@ -71,21 +72,25 @@ joined.
    No build settings needed — it's a static HTML file.
 3. Vercel gives you a live URL (like `backup-bowl.vercel.app`) — that's your permanent link.
    Send that to your friends instead of a Claude.ai artifact link.
-4. Go back to **Authentication → URL Configuration** in Supabase (step 2 above) and make sure this
-   real URL is in the Redirect URLs list — magic links won't log people in correctly until it is.
 
 From now on, any time you push a change to the GitHub repo, Vercel redeploys automatically.
 
 ## 6. Create your league
 
-1. Open your new live URL. Log in with your email (you'll get a magic link).
+1. Open your new live URL. Click **Sign Up**, enter your email and a password.
 2. Once logged in, name your league — you become its commissioner.
 3. If you're upgrading from an older single-league version of this site, you'll see an **"Import
    this site's existing rules, scoring settings, and player pool"** checkbox — check it to carry
    those over automatically. (Teams and picks aren't imported, since without real accounts there's
    no one to own them — set teams up fresh via invites below.)
-4. From the **Commissioner** tab, copy your league's invite link and send it to your friends. Each
-   one logs in with their own email, picks a team name, and can edit only that team from then on.
+4. From the **Commissioner** tab, copy your league's invite link. Optionally reserve a spot (and a
+   suggested team name) for a friend's email first — then send them the link yourself however you
+   like (text, email, whatever). They click **Sign Up** with that same email, pick a password, and
+   land straight on setting up their team.
+
+If someone loses the page or comes back later, they just log back in — the site remembers which
+league(s) their account belongs to and takes them straight there (or lets them pick, if they're in
+more than one).
 
 Anyone can create their own separate league on this same deployed site — leagues never see each
 other's data. The 6-character code in the URL (`?league=ABC123`) is what scopes everything.
