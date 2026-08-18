@@ -1,4 +1,4 @@
--- Backup Bowl storage schema
+-- Backups Only League storage schema
 -- Run this once in your Supabase project's SQL Editor (Project -> SQL Editor -> New Query)
 
 create table if not exists league_kv (

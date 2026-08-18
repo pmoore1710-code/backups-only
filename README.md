@@ -1,6 +1,6 @@
-# Backup Bowl — self-hosted setup
+# Backups Only League — self-hosted setup
 
-This is the self-hosted version of Backup Bowl. It's the same site you've been using, with one
+This is the self-hosted version of Backups Only League. It's the same site you've been using, with one
 change under the hood: instead of relying on Claude.ai's built-in storage, it saves league data
 (rosters, scores, lineups, chat) to a free Supabase database, so it works on any URL.
 
@@ -37,7 +37,7 @@ works exactly like it did before.
    ```bash
    git init
    git add .
-   git commit -m "Backup Bowl"
+   git commit -m "Backups Only League"
    git branch -M main
    git remote add origin https://github.com/YOUR_USERNAME/backup-bowl.git
    git push -u origin main
