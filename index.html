@@ -316,12 +316,12 @@
 const SUPABASE_URL = 'https://upldafneeezkwevnbagv.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwbGRhZm5lZWV6a3dldm5iYWd2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcwMTA3OTYsImV4cCI6MjEwMjU4Njc5Nn0.0rpA8XcxhzQOD1XNOCVGGZuV-jzFpSgFfyPjg6UEnUM';
 
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ---------- storage helpers (Supabase-backed, mirrors the original window.storage API) ----------
 async function sGet(key, fallback){
   try{
-    const { data, error } = await supabase
+    const { data, error } = await sb
       .from('league_kv')
       .select('value')
       .eq('key', key)
@@ -332,7 +332,7 @@ async function sGet(key, fallback){
 }
 async function sSet(key, val){
   try{
-    const { error } = await supabase
+    const { error } = await sb
       .from('league_kv')
       .upsert({ key, value: JSON.stringify(val), updated_at: new Date().toISOString() });
     if(error) console.error('storage set failed', key, error);
