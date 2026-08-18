@@ -720,9 +720,11 @@ async function onAuthChanged(){
   renderAll();
 }
 
+let inPasswordRecovery = false;
+
 sb.auth.onAuthStateChange((event, sess)=>{
   session = sess;
-  if(event === 'PASSWORD_RECOVERY'){ renderPasswordRecovery(); return; }
+  if(event === 'PASSWORD_RECOVERY'){ inPasswordRecovery = true; renderPasswordRecovery(); return; }
   if(!appReady) return; // the initial getSession() + boot() sequence below handles the first state
   onAuthChanged();
 });
@@ -747,6 +749,7 @@ function renderPasswordRecovery(){
     msg.textContent = 'Saving…';
     const { error } = await sb.auth.updateUser({ password });
     if(error){ msg.textContent = error.message; return; }
+    inPasswordRecovery = false;
     appReady = true;
     LEAGUE_ID = new URLSearchParams(location.search).get('league');
     if(!LEAGUE_ID){ renderLanding(); } else { await enterLeague(); }
@@ -755,6 +758,7 @@ function renderPasswordRecovery(){
 
 async function boot(){
   const { data } = await sb.auth.getSession();
+  if(inPasswordRecovery){ appReady = true; return; } // recovery screen already up — don't clobber it
   session = data.session;
   LEAGUE_ID = new URLSearchParams(location.search).get('league');
   if(!LEAGUE_ID){ appReady = true; renderLanding(); return; }
