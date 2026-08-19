@@ -86,8 +86,14 @@ create table if not exists players (
   name text not null,
   pos text not null,
   nfl_team text,
-  third_string boolean default false
+  third_string boolean default false,
+  preseason_prev_week text,
+  preseason_prev_week_points numeric,
+  preseason_season_points numeric
 );
+alter table players add column if not exists preseason_prev_week text;
+alter table players add column if not exists preseason_prev_week_points numeric;
+alter table players add column if not exists preseason_season_points numeric;
 
 create table if not exists picks (
   id uuid primary key default gen_random_uuid(),

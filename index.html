@@ -667,7 +667,7 @@ async function loadTeams(){
 }
 async function loadPlayers(){
   const { data } = await sb.from('players').select('*').eq('league_id', LEAGUE_ID).order('name');
-  players = (data||[]).map(p=>({ id:p.id, name:p.name, pos:p.pos, nflTeam:p.nfl_team||'', thirdString:!!p.third_string }));
+  players = (data||[]).map(p=>({ id:p.id, name:p.name, pos:p.pos, nflTeam:p.nfl_team||'', thirdString:!!p.third_string, preseasonPrevWeek:p.preseason_prev_week||'', preseasonPrevWeekPoints:p.preseason_prev_week_points||0, preseasonSeasonPoints:p.preseason_season_points||0 }));
 }
 async function loadPicks(){
   const { data } = await sb.from('picks').select('*').eq('league_id', LEAGUE_ID).order('pick_number');
@@ -1382,6 +1382,11 @@ document.getElementById('addTeam').addEventListener('click', async ()=>{
   renderTeams(); renderDraft(); renderRosters(); renderStandings();
 });
 
+function preseasonStatsHtml(p){
+  if(!p.preseasonPrevWeek && !p.preseasonSeasonPoints) return '';
+  return `<div class="pmeta" style="margin-top:4px;font-size:11px;color:var(--muted);">Prev Wk${p.preseasonPrevWeek?' '+esc(p.preseasonPrevWeek):''}: <strong style="color:var(--chalk);">${p.preseasonPrevWeekPoints.toFixed(1)}</strong> · Preseason Total: <strong style="color:var(--chalk);">${p.preseasonSeasonPoints.toFixed(1)}</strong></div>`;
+}
+
 function avatarHtml(t, size){
   size = size || 32;
   if(t.avatarUrl){
@@ -1847,6 +1852,58 @@ function renderDraft(){
         await loadPlayers();
         renderDraft();
       };
+
+      const preseasonPanel = document.createElement('div');
+      preseasonPanel.className='panel';
+      const defaultSeason = (new Date().getMonth()>=6) ? new Date().getFullYear() : new Date().getFullYear()-1;
+      preseasonPanel.innerHTML = `
+        <h2>Preseason Stats</h2>
+        <div class="sub">Pull each pool player's preseason box scores from Sleeper (weeks 1-3) using your Scoring Weights, so everyone can see who's been playing well before the draft.</div>
+        <div class="row" style="align-items:flex-end;">
+          <div class="field" style="max-width:110px;"><label>Season</label><input type="number" id="preseasonSeason" value="${defaultSeason}"></div>
+          <div class="field" style="max-width:260px;"><button class="btn ghost" id="preseasonFetchBtn" style="width:100%;">Update Preseason Stats from Sleeper</button></div>
+        </div>
+        <div id="preseasonStatus" style="font-size:12px; color:var(--muted);"></div>
+      `;
+      area.appendChild(preseasonPanel);
+      preseasonPanel.querySelector('#preseasonFetchBtn').onclick = async ()=>{
+        const statusEl = preseasonPanel.querySelector('#preseasonStatus');
+        if(players.length===0){ statusEl.textContent = 'Add players to the pool first.'; return; }
+        const season = preseasonPanel.querySelector('#preseasonSeason').value;
+        statusEl.textContent = 'Loading Sleeper player database…';
+        try{
+          await ensureSleeperPlayers();
+          const perPlayer = {};
+          players.forEach(p=>{ perPlayer[p.id] = { weeks:{}, sid: findSleeperId(p.name, p.pos) }; });
+          for(const wk of ['1','2','3']){
+            statusEl.textContent = 'Fetching preseason week '+wk+' stats…';
+            const res = await fetch(`https://api.sleeper.app/v1/stats/nfl/pre/${season}/${wk}`);
+            if(!res.ok) continue;
+            const statsData = await res.json();
+            players.forEach(p=>{
+              const sid = perPlayer[p.id].sid;
+              if(!sid) return;
+              const s = statsData[sid];
+              if(!s) return;
+              perPlayer[p.id].weeks[wk] = computePoints(s);
+            });
+          }
+          const updates = players.map(p=>{
+            const weeks = perPlayer[p.id].weeks;
+            const playedWeeks = Object.keys(weeks).sort((a,b)=>Number(a)-Number(b));
+            const seasonTotal = playedWeeks.reduce((sum,wk)=>sum+weeks[wk], 0);
+            const lastWeek = playedWeeks[playedWeeks.length-1] || null;
+            return { id:p.id, preseason_prev_week: lastWeek, preseason_prev_week_points: lastWeek?weeks[lastWeek]:0, preseason_season_points: seasonTotal };
+          });
+          await Promise.all(updates.map(u=>sb.from('players').update({ preseason_prev_week:u.preseason_prev_week, preseason_prev_week_points:u.preseason_prev_week_points, preseason_season_points:u.preseason_season_points }).eq('id', u.id)));
+          await loadPlayers();
+          renderDraft();
+          const newStatusEl = document.getElementById('preseasonStatus');
+          if(newStatusEl) newStatusEl.textContent = 'Preseason stats updated.';
+        }catch(err){
+          statusEl.textContent = 'Update failed (' + err.message + '). Try again.';
+        }
+      };
     }
 
     const orderPanel = document.createElement('div');
@@ -1887,7 +1944,7 @@ function renderDraft(){
     players.forEach(p=>{
       const c = document.createElement('div');
       c.className='player-card';
-      c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>`;
+      c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>${preseasonStatsHtml(p)}`;
       if(unlocked){
         const rm = document.createElement('button');
         rm.className='btn danger'; rm.textContent='Remove';
@@ -1958,7 +2015,7 @@ function renderDraft(){
   avail.forEach(p=>{
     const c = document.createElement('div');
     c.className='player-card';
-    c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>`;
+    c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>${preseasonStatsHtml(p)}`;
     if(!done && !league.draftPaused){
       const b = document.createElement('button');
       b.className='btn'; b.textContent='Draft';
