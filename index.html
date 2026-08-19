@@ -600,6 +600,20 @@ Los Angeles Rams, DEF, LAR
 San Francisco 49ers, DEF, SF
 Seattle Seahawks, DEF, SEA`;
 
+function parseBulkPlayers(leagueId, text){
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  const rows = [];
+  lines.forEach(line=>{
+    const parts = line.split(',').map(p=>p.trim());
+    if(parts.length<2) return;
+    const [name, pos, nflTeam, flag] = parts;
+    if(!name) return;
+    const thirdString = !!(flag && /3rd|third/i.test(flag));
+    rows.push({ league_id: leagueId, name, pos:(pos||'QB').toUpperCase(), nfl_team:nflTeam||'', third_string:thirdString });
+  });
+  return rows;
+}
+
 function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function genLeagueCode(){
@@ -724,6 +738,7 @@ async function enterLeague(){
   renderAll();
   subscribeRealtime();
   if(!clockLoopStarted){ setInterval(tickClock, 1000); clockLoopStarted = true; }
+  await ensurePlayerPoolSeeded();
   autoFetchPreseasonStatsIfNeeded();
 }
 
@@ -734,6 +749,7 @@ async function onAuthChanged(){
   if(session && needsFirstLoginSetup()){ await renderFirstLoginSetup(); return; }
   showMainApp();
   renderAll();
+  await ensurePlayerPoolSeeded();
   autoFetchPreseasonStatsIfNeeded();
 }
 
@@ -1079,6 +1095,8 @@ async function createLeagueRow(name, userId){
     if(!error){
       await sb.from('league_settings').insert({ league_id: code });
       await sb.from('draft_runtime').insert({ league_id: code });
+      const playerRows = parseBulkPlayers(code, DEFAULT_BULK);
+      if(playerRows.length) await sb.from('players').insert(playerRows);
       return code;
     }
     if(error.code !== '23505'){ console.error(error); return null; }
@@ -1807,40 +1825,10 @@ function renderDraft(){
     panel.className='panel';
     panel.innerHTML = `
       <h2>Player Pool</h2>
-      <div class="sub">${unlocked ? "Manage the eligible players below, or use Bulk Import to add more. Preseason points (from Sleeper) fill in automatically for each player below." : "Only the commissioner can manage the player pool."}</div>
+      <div class="sub">Every eligible player (each team's backup QB, kicker, and all 32 defenses) is added automatically — no need to manage the pool by hand. Preseason points (from Sleeper) fill in automatically for each player below.</div>
       <div class="player-grid" id="poolGrid" style="margin-top:16px;"></div>
     `;
     area.appendChild(panel);
-
-    if(unlocked){
-      const bulkPanel = document.createElement('div');
-      bulkPanel.className='panel';
-      bulkPanel.innerHTML = `
-        <h2>Bulk Import</h2>
-        <div class="sub">One player per line: <code>Name, POS, TEAM</code>. Pre-filled with each team's backup (and 3rd-string) QB, current placekicker — both from <a href="https://www.ourlads.com/nfldepthcharts/depthchartpos/QB" target="_blank" style="color:var(--gold-bright);">Ourlads' depth charts</a> — and all 32 defense/special-teams units. Defenses aren't drafted from any depth chart (they're whole-team units in every fantasy format), so those 32 are just the standard team list, not Ourlads-sourced. Edit the list to fit your rules, then add.</div>
-        <textarea id="bulkText" rows="10" style="font-family:'IBM Plex Mono',monospace; font-size:12.5px;">${DEFAULT_BULK}</textarea>
-        <div style="margin-top:10px;"><button class="btn" id="bulkAdd">Add All</button></div>
-      `;
-      area.appendChild(bulkPanel);
-      bulkPanel.querySelector('#bulkAdd').onclick = async ()=>{
-        const lines = bulkPanel.querySelector('#bulkText').value.split('\n').map(l=>l.trim()).filter(Boolean);
-        const rows = [];
-        lines.forEach(line=>{
-          const parts = line.split(',').map(p=>p.trim());
-          if(parts.length<2) return;
-          const [name, pos, nflTeam, flag] = parts;
-          if(!name) return;
-          const thirdString = !!(flag && /3rd|third/i.test(flag));
-          rows.push({ league_id: LEAGUE_ID, name, pos:(pos||'QB').toUpperCase(), nfl_team:nflTeam||'', third_string:thirdString });
-        });
-        if(rows.length){
-          const { error } = await sb.from('players').insert(rows);
-          if(error){ alert(error.message); return; }
-        }
-        await loadPlayers();
-        renderDraft();
-      };
-    }
 
     const orderPanel = document.createElement('div');
     orderPanel.className='panel';
@@ -1866,16 +1854,6 @@ function renderDraft(){
       const c = document.createElement('div');
       c.className='player-card';
       c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>${preseasonStatsHtml(p)}`;
-      if(unlocked){
-        const rm = document.createElement('button');
-        rm.className='btn danger'; rm.textContent='Remove';
-        rm.onclick = async ()=>{
-          await sb.from('players').delete().eq('id', p.id);
-          await loadPlayers();
-          renderDraft();
-        };
-        c.appendChild(rm);
-      }
       grid.appendChild(c);
     });
     return;
@@ -2266,6 +2244,27 @@ function computePoints(s){
   pts += (s.pass_td_40||0) * weights.pass_td_40;
   pts += (s.pass_fd||0) * weights.pass_fd;
   return Math.round(pts*100)/100;
+}
+
+// Backfills the default player pool for any league whose pool is still
+// empty (e.g. one created before auto-seeding existed) — no manual import
+// needed. Only the commissioner's browser can write players.*. Guarded
+// against overlapping calls since login can trigger this twice in quick
+// succession (once from the auth-state listener, once from the explicit
+// post-login callback).
+let poolSeedInProgress = false;
+async function ensurePlayerPoolSeeded(){
+  if(!unlocked || league.draftStarted || players.length>0) return;
+  if(poolSeedInProgress) return;
+  poolSeedInProgress = true;
+  try{
+    const rows = parseBulkPlayers(LEAGUE_ID, DEFAULT_BULK);
+    if(!rows.length) return;
+    const { error } = await sb.from('players').insert(rows);
+    if(!error){ await loadPlayers(); renderDraft(); }
+  }finally{
+    poolSeedInProgress = false;
+  }
 }
 
 // Auto-fetches preseason box scores from Sleeper for the player pool, so
