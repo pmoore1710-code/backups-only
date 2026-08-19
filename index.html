@@ -19,6 +19,7 @@
     --gold-bright:#0D4C8C;
     --red:#C0392B;
     --blue:#4A7FAE;
+    --gold-accent:#9C7A00;
   }
   *{box-sizing:border-box;}
   body{margin:0;background:var(--bg);color:var(--chalk);font-family:'Work Sans',sans-serif;}
@@ -50,8 +51,8 @@
 
   nav{display:flex; justify-content:center; gap:6px; flex-wrap:wrap; padding:0 16px 28px; border-bottom:1px solid var(--panel-line);}
   nav button{
-    font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.1em; text-transform:uppercase;
-    background:transparent; border:1px solid var(--panel-line); color:var(--muted); padding:9px 16px; border-radius:4px; cursor:pointer; transition:.15s;
+    font-family:'IBM Plex Mono',monospace; font-size:12px; letter-spacing:.1em; text-transform:uppercase; font-weight:700;
+    background:transparent; border:1px solid var(--panel-line); color:var(--chalk); padding:9px 16px; border-radius:4px; cursor:pointer; transition:.15s;
   }
   nav button:hover{border-color:var(--gold); color:var(--chalk);}
   nav button.active{background:var(--gold); color:#FFFFFF; border-color:var(--gold); font-weight:600;}
@@ -157,6 +158,8 @@
   .invite-link-box{display:flex; gap:8px; align-items:center; background:var(--bg-alt); border:1px solid var(--panel-line); border-radius:5px; padding:10px 12px; font-family:'IBM Plex Mono',monospace; font-size:13px; margin-bottom:14px; flex-wrap:wrap;}
   .invite-link-box code{flex:1; min-width:160px; word-break:break-all; color:var(--gold-bright);}
   .owner-tag{font-size:11px; color:var(--gold-bright); font-family:'IBM Plex Mono',monospace; margin-left:6px;}
+  .team-avatar{border-radius:50%; object-fit:cover; border:1px solid var(--panel-line); flex-shrink:0; vertical-align:middle;}
+  .team-avatar-placeholder{border-radius:50%; background:var(--bg-alt); border:1px solid var(--panel-line); display:inline-flex; align-items:center; justify-content:center; font-weight:700; color:var(--gold-bright); flex-shrink:0; vertical-align:middle;}
   .pw-field{position:relative;}
   .pw-field input{padding-right:38px;}
   .pw-toggle{position:absolute; right:4px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:16px; padding:6px; line-height:1; color:var(--muted); border-radius:4px;}
@@ -659,7 +662,7 @@ async function loadLeague(){
 }
 async function loadTeams(){
   const { data } = await sb.from('teams').select('*').eq('league_id', LEAGUE_ID).order('created_at');
-  league.teams = (data||[]).map(t=>({ id:t.id, name:t.name, owner:t.owner_name||'', ownerUserId:t.owner_user_id }));
+  league.teams = (data||[]).map(t=>({ id:t.id, name:t.name, owner:t.owner_name||'', ownerUserId:t.owner_user_id, avatarUrl:t.avatar_url||'' }));
 }
 async function loadPlayers(){
   const { data } = await sb.from('players').select('*').eq('league_id', LEAGUE_ID).order('name');
@@ -1378,6 +1381,26 @@ document.getElementById('addTeam').addEventListener('click', async ()=>{
   renderTeams(); renderDraft(); renderRosters(); renderStandings();
 });
 
+function avatarHtml(t, size){
+  size = size || 32;
+  if(t.avatarUrl){
+    return `<img src="${esc(t.avatarUrl)}" class="team-avatar" style="width:${size}px;height:${size}px;" alt="">`;
+  }
+  const initials = (t.name||'?').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase();
+  return `<span class="team-avatar-placeholder" style="width:${size}px;height:${size}px;font-size:${Math.round(size*0.4)}px;">${esc(initials)}</span>`;
+}
+
+async function uploadTeamAvatar(teamId, file){
+  const ext = (file.name.split('.').pop()||'jpg').toLowerCase();
+  const path = `${LEAGUE_ID}/${teamId}-${Date.now()}.${ext}`;
+  const { error: upErr } = await sb.storage.from('avatars').upload(path, file, { upsert:true, contentType:file.type });
+  if(upErr){ alert('Photo upload failed: '+upErr.message); return; }
+  const { data } = sb.storage.from('avatars').getPublicUrl(path);
+  await sb.from('teams').update({ avatar_url: data.publicUrl }).eq('id', teamId);
+  await loadTeams(); recomputeMyTeam();
+  renderTeams(); renderRosters(); renderStandings();
+}
+
 function renderTeams(){
   const ul = document.getElementById('teamList');
   ul.innerHTML='';
@@ -1387,9 +1410,23 @@ function renderTeams(){
     const li = document.createElement('li');
     li.className='list-row';
     const isMine = myTeam && myTeam.id===t.id;
-    li.innerHTML = `<span><strong>${esc(t.name)}</strong> <span style="color:var(--muted);font-size:12px;">— ${esc(t.owner||'')}</span>${isMine?'<span class="owner-tag">YOUR TEAM</span>':''}</span>`;
+    li.innerHTML = `<span style="display:flex;align-items:center;gap:10px;">${avatarHtml(t,32)}<span><strong>${esc(t.name)}</strong> <span style="color:var(--muted);font-size:12px;">— ${esc(t.owner||'')}</span>${isMine?'<span class="owner-tag">YOUR TEAM</span>':''}</span></span>`;
     const btnWrap = document.createElement('span');
     if(isMine){
+      const photoLabel = document.createElement('label');
+      photoLabel.className='btn ghost'; photoLabel.style.marginRight='6px'; photoLabel.style.cursor='pointer';
+      photoLabel.textContent = t.avatarUrl ? 'Change Photo' : 'Add Photo';
+      const fileInput = document.createElement('input');
+      fileInput.type='file'; fileInput.accept='image/*'; fileInput.style.display='none';
+      fileInput.onchange = async ()=>{
+        const file = fileInput.files[0];
+        if(!file) return;
+        photoLabel.textContent = 'Uploading…';
+        await uploadTeamAvatar(t.id, file);
+      };
+      photoLabel.appendChild(fileInput);
+      btnWrap.appendChild(photoLabel);
+
       const renameBtn = document.createElement('button');
       renameBtn.className='btn ghost'; renameBtn.textContent='Rename';
       renameBtn.style.marginRight='6px';
@@ -1849,7 +1886,7 @@ function renderDraft(){
     players.forEach(p=>{
       const c = document.createElement('div');
       c.className='player-card';
-      c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold);color:var(--gold-bright);">3RD · 1.5x</span>':''}</div>`;
+      c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>`;
       if(unlocked){
         const rm = document.createElement('button');
         rm.className='btn danger'; rm.textContent='Remove';
@@ -1920,7 +1957,7 @@ function renderDraft(){
   avail.forEach(p=>{
     const c = document.createElement('div');
     c.className='player-card';
-    c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold);color:var(--gold-bright);">3RD · 1.5x</span>':''}</div>`;
+    c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>`;
     if(!done && !league.draftPaused){
       const b = document.createElement('button');
       b.className='btn'; b.textContent='Draft';
@@ -1960,12 +1997,12 @@ function renderRosters(){
     const myPicks = league.picks.filter(p=>p.teamId===t.id);
     const card = document.createElement('div');
     card.className='team-card';
-    let body = `<h3>${esc(t.name)}</h3><div class="owner">${esc(t.owner||'')}</div>`;
+    let body = `<h3 style="display:flex;align-items:center;gap:10px;">${avatarHtml(t,40)}${esc(t.name)}</h3><div class="owner">${esc(t.owner||'')}</div>`;
     if(myPicks.length===0){ body += '<div class="empty">No players drafted yet.</div>'; }
     else{
       body += '<div>' + myPicks.map(pk=>{
         const pl = players.find(x=>x.id===pk.playerId);
-        return pl ? `<span class="chip pos-${pl.pos}">${pl.pos}</span> ${esc(pl.name)}${pl.thirdString?' <span class="chip" style="border-color:var(--gold);color:var(--gold-bright);">1.5x</span>':''}<br>` : '';
+        return pl ? `<span class="chip pos-${pl.pos}">${pl.pos}</span> ${esc(pl.name)}${pl.thirdString?' <span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">1.5x</span>':''}<br>` : '';
       }).join('') + '</div>';
     }
     card.innerHTML = body;
@@ -2159,7 +2196,7 @@ function renderStandings(){
     const el = tablePanel.querySelector('#standTable');
     if(league.teams.length===0){ el.innerHTML='<div class="empty">No teams yet.</div>'; return; }
     el.innerHTML = `<table><tr><th>#</th><th>Team</th><th>Total Points</th></tr>` +
-      totals.map((r,i)=>`<tr><td class="${i===0?'rank1':''}">${i+1}</td><td class="${i===0?'rank1':''}">${esc(r.team.name)}${r.anyLineup?'':' <span style=\"color:var(--muted);font-size:11px;\">(no lineup set)</span>'}</td><td class="${i===0?'rank1':''}">${r.total.toFixed(1)}</td></tr>`).join('') +
+      totals.map((r,i)=>`<tr><td class="${i===0?'rank1':''}">${i+1}</td><td class="${i===0?'rank1':''}"><span style="display:flex;align-items:center;gap:8px;">${avatarHtml(r.team,22)}${esc(r.team.name)}${r.anyLineup?'':' <span style=\"color:var(--muted);font-size:11px;\">(no lineup set)</span>'}</span></td><td class="${i===0?'rank1':''}">${r.total.toFixed(1)}</td></tr>`).join('') +
       `</table>`;
   }
   renderTable();

@@ -75,8 +75,10 @@ create table if not exists teams (
   name text not null,
   owner_name text,
   owner_user_id uuid references auth.users(id),
+  avatar_url text,
   created_at timestamptz default now()
 );
+alter table teams add column if not exists avatar_url text;
 
 create table if not exists players (
   id uuid primary key default gen_random_uuid(),
@@ -430,3 +432,25 @@ begin
     end if;
   end loop;
 end $$;
+
+-- ============================================================
+-- Storage: a public bucket for team profile pictures. Anyone can
+-- view avatars; any signed-in user can upload one (the actual
+-- claim of "this is now my team's picture" is protected by the
+-- owner-only update policy on teams.avatar_url above).
+-- ============================================================
+insert into storage.buckets (id, name, public)
+values ('avatars', 'avatars', true)
+on conflict (id) do nothing;
+
+drop policy if exists "Public read avatars" on storage.objects;
+create policy "Public read avatars" on storage.objects
+  for select using (bucket_id = 'avatars');
+
+drop policy if exists "Authenticated upload avatars" on storage.objects;
+create policy "Authenticated upload avatars" on storage.objects
+  for insert with check (bucket_id = 'avatars' and auth.role() = 'authenticated');
+
+drop policy if exists "Authenticated update avatars" on storage.objects;
+create policy "Authenticated update avatars" on storage.objects
+  for update using (bucket_id = 'avatars' and auth.role() = 'authenticated');
