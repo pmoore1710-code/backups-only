@@ -1081,22 +1081,28 @@ async function renderLanding(){
     const msg = document.getElementById('createLeagueMsg');
     if(!name){ msg.textContent = 'Name your league first.'; return; }
     msg.textContent = 'Creating…';
-    const code = await createLeagueRow(name, session.user.id);
+    const willImportLegacy = !!document.getElementById('importLegacyCheck')?.checked;
+    // Skip the default player-pool seed when a legacy pool is about to be imported —
+    // otherwise both land in the table and every player shows up twice.
+    const code = await createLeagueRow(name, session.user.id, { seedDefaultPlayers: !willImportLegacy });
     if(!code){ msg.textContent = "Something went wrong — try again."; return; }
-    if(document.getElementById('importLegacyCheck')?.checked){ await importLegacyData(code); }
+    if(willImportLegacy){ await importLegacyData(code); }
     location.search = '?league='+code;
   };
 }
 
-async function createLeagueRow(name, userId){
+async function createLeagueRow(name, userId, opts){
+  const seedDefaultPlayers = !opts || opts.seedDefaultPlayers !== false;
   for(let attempt=0; attempt<5; attempt++){
     const code = genLeagueCode();
     const { error } = await sb.from('leagues').insert({ id: code, name, commissioner_user_id: userId });
     if(!error){
       await sb.from('league_settings').insert({ league_id: code });
       await sb.from('draft_runtime').insert({ league_id: code });
-      const playerRows = parseBulkPlayers(code, DEFAULT_BULK);
-      if(playerRows.length) await sb.from('players').insert(playerRows);
+      if(seedDefaultPlayers){
+        const playerRows = parseBulkPlayers(code, DEFAULT_BULK);
+        if(playerRows.length) await sb.from('players').insert(playerRows);
+      }
       return code;
     }
     if(error.code !== '23505'){ console.error(error); return null; }
@@ -1826,6 +1832,7 @@ function renderDraft(){
     panel.innerHTML = `
       <h2>Player Pool</h2>
       <div class="sub">Every eligible player (each team's backup QB, kicker, and all 32 defenses) is added automatically — no need to manage the pool by hand. Preseason points (from Sleeper) fill in automatically for each player below.</div>
+      ${unlocked ? `<div class="sub" id="preseasonStatus" style="margin-top:2px;"></div>` : ''}
       <div class="player-grid" id="poolGrid" style="margin-top:16px;"></div>
     `;
     area.appendChild(panel);
@@ -2272,11 +2279,16 @@ async function ensurePlayerPoolSeeded(){
 // the commissioner's browser can write players.*, and this is throttled
 // so it isn't re-fetched on every render.
 const preseasonFetchState = { lastFetchedAt: 0, inProgress: false };
+function setPreseasonStatus(msg){
+  const el = document.getElementById('preseasonStatus');
+  if(el) el.textContent = msg;
+}
 async function autoFetchPreseasonStatsIfNeeded(){
   if(!unlocked || league.draftStarted || players.length===0) return;
   if(preseasonFetchState.inProgress) return;
   if(Date.now() - preseasonFetchState.lastFetchedAt < 30*60*1000) return;
   preseasonFetchState.inProgress = true;
+  setPreseasonStatus('Fetching preseason stats from Sleeper…');
   try{
     const season = (new Date().getMonth()>=6) ? new Date().getFullYear() : new Date().getFullYear()-1;
     await ensureSleeperPlayers();
@@ -2294,21 +2306,37 @@ async function autoFetchPreseasonStatsIfNeeded(){
         perPlayer[p.id].weeks[wk] = computePoints(s);
       });
     }
-    const updates = players.filter(p=>perPlayer[p.id].sid).map(p=>{
+    const matched = players.filter(p=>perPlayer[p.id].sid);
+    const updates = matched.map(p=>{
       const weeks = perPlayer[p.id].weeks;
       const playedWeeks = Object.keys(weeks).sort((a,b)=>Number(a)-Number(b));
       const seasonTotal = playedWeeks.reduce((sum,wk)=>sum+weeks[wk], 0);
       const lastWeek = playedWeeks[playedWeeks.length-1] || null;
       return { id:p.id, preseason_prev_week: lastWeek, preseason_prev_week_points: lastWeek?weeks[lastWeek]:0, preseason_season_points: seasonTotal };
     });
+    const playedCount = updates.filter(u=>u.preseason_prev_week).length;
+
+    let writeError = null;
     if(updates.length){
-      await Promise.all(updates.map(u=>sb.from('players').update({ preseason_prev_week:u.preseason_prev_week, preseason_prev_week_points:u.preseason_prev_week_points, preseason_season_points:u.preseason_season_points }).eq('id', u.id)));
+      const results = await Promise.all(updates.map(u=>sb.from('players').update({ preseason_prev_week:u.preseason_prev_week, preseason_prev_week_points:u.preseason_prev_week_points, preseason_season_points:u.preseason_season_points }).eq('id', u.id)));
+      writeError = results.find(r=>r && r.error) && results.find(r=>r && r.error).error;
       await loadPlayers();
       if(!league.draftStarted) renderDraft();
     }
     preseasonFetchState.lastFetchedAt = Date.now();
+
+    if(writeError){
+      setPreseasonStatus("Couldn't save preseason stats (" + writeError.message + "). Make sure the database has the latest schema update.");
+    } else if(matched.length===0){
+      setPreseasonStatus("Couldn't match any pool players to Sleeper's player database.");
+    } else if(playedCount===0){
+      setPreseasonStatus('Matched ' + matched.length + ' player(s), but no preseason stats are available for them yet.');
+    } else {
+      setPreseasonStatus('Preseason stats updated for ' + playedCount + ' of ' + matched.length + ' matched player(s).');
+    }
   }catch(e){
     console.error('preseason auto-fetch failed', e);
+    setPreseasonStatus("Couldn't reach Sleeper (" + e.message + "). Will retry automatically.");
   }finally{
     preseasonFetchState.inProgress = false;
   }
