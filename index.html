@@ -20,6 +20,7 @@
     --red:#C0392B;
     --blue:#4A7FAE;
     --gold-accent:#9C7A00;
+    --green:#1E8449;
   }
   *{box-sizing:border-box;}
   body{margin:0;background:var(--bg);color:var(--chalk);font-family:'Work Sans',sans-serif;}
@@ -2175,7 +2176,26 @@ function renderStandings(){
     renderTable();
   });
 
+  function teamWeekPoints(t, wk){
+    if(!wk) return 0;
+    const teamLineup = (lineups[wk] && lineups[wk][t.id]) ? lineups[wk][t.id] : null;
+    if(!teamLineup) return 0;
+    let sum = 0;
+    Object.values(teamLineup).forEach(pid=>{
+      if(!pid) return;
+      const raw = (scores[wk] && scores[wk][pid]) || 0;
+      const pl = players.find(x=>x.id===pid);
+      const mult = (pl && pl.thirdString) ? 1.5 : 1;
+      sum += raw * mult;
+    });
+    return sum;
+  }
+
   function renderTable(){
+    const weekKeys = Object.keys(scores).sort((a,b)=>Number(a)-Number(b));
+    const latestWeek = weekKeys[weekKeys.length-1];
+    const prevWeek = weekKeys.length>1 ? weekKeys[weekKeys.length-2] : null;
+
     const totals = league.teams.map(t=>{
       let total = 0;
       let anyLineup = false;
@@ -2183,20 +2203,23 @@ function renderStandings(){
         const teamLineup = (lineups[wk] && lineups[wk][t.id]) ? lineups[wk][t.id] : null;
         if(!teamLineup) return;
         anyLineup = true;
-        Object.values(teamLineup).forEach(pid=>{
-          if(!pid) return;
-          const raw = scores[wk][pid]||0;
-          const pl = players.find(x=>x.id===pid);
-          const mult = (pl && pl.thirdString) ? 1.5 : 1;
-          total += raw * mult;
-        });
+        total += teamWeekPoints(t, wk);
       });
-      return {team:t, total, anyLineup};
+      const thisWeekPts = teamWeekPoints(t, latestWeek);
+      const change = thisWeekPts - teamWeekPoints(t, prevWeek);
+      return {team:t, total, anyLineup, thisWeekPts, change};
     }).sort((a,b)=>b.total-a.total);
+    const leaderTotal = totals.length ? totals[0].total : 0;
+
     const el = tablePanel.querySelector('#standTable');
     if(league.teams.length===0){ el.innerHTML='<div class="empty">No teams yet.</div>'; return; }
-    el.innerHTML = `<table><tr><th>#</th><th>Team</th><th>Total Points</th></tr>` +
-      totals.map((r,i)=>`<tr><td class="${i===0?'rank1':''}">${i+1}</td><td class="${i===0?'rank1':''}"><span style="display:flex;align-items:center;gap:8px;">${avatarHtml(r.team,22)}${esc(r.team.name)}${r.anyLineup?'':' <span style=\"color:var(--muted);font-size:11px;\">(no lineup set)</span>'}</span></td><td class="${i===0?'rank1':''}">${r.total.toFixed(1)}</td></tr>`).join('') +
+    el.innerHTML = `<table><tr><th>#</th><th>Team</th><th>Total Points</th><th>Change in Points</th><th>Points Behind</th><th>Points Scored This Week</th></tr>` +
+      totals.map((r,i)=>{
+        const changeColor = r.change>0 ? 'var(--green)' : (r.change<0 ? 'var(--red)' : 'var(--muted)');
+        const changeSign = r.change>0 ? '+' : '';
+        const behind = i===0 ? '—' : (leaderTotal - r.total).toFixed(1);
+        return `<tr><td class="${i===0?'rank1':''}">${i+1}</td><td class="${i===0?'rank1':''}"><span style="display:flex;align-items:center;gap:8px;">${avatarHtml(r.team,22)}${esc(r.team.name)}${r.anyLineup?'':' <span style=\"color:var(--muted);font-size:11px;\">(no lineup set)</span>'}</span></td><td class="${i===0?'rank1':''}">${r.total.toFixed(1)}</td><td style="color:${changeColor};font-weight:600;">${changeSign}${r.change.toFixed(1)}</td><td>${behind}</td><td>${r.thisWeekPts.toFixed(1)}</td></tr>`;
+      }).join('') +
       `</table>`;
   }
   renderTable();
