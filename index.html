@@ -726,6 +726,7 @@ async function enterLeague(){
   renderAll();
   subscribeRealtime();
   if(!clockLoopStarted){ setInterval(tickClock, 1000); clockLoopStarted = true; }
+  autoFetchPreseasonStatsIfNeeded();
 }
 
 async function onAuthChanged(){
@@ -735,6 +736,7 @@ async function onAuthChanged(){
   if(session && needsFirstLoginSetup()){ await renderFirstLoginSetup(); return; }
   showMainApp();
   renderAll();
+  autoFetchPreseasonStatsIfNeeded();
 }
 
 let inPasswordRecovery = false;
@@ -1807,7 +1809,7 @@ function renderDraft(){
     panel.className='panel';
     panel.innerHTML = `
       <h2>Player Pool</h2>
-      <div class="sub">${unlocked ? "Add eligible players before the draft. Only add players who fit your league's rules (e.g. actual backup QBs)." : "Only the commissioner can manage the player pool."}</div>
+      <div class="sub">${unlocked ? "Add eligible players before the draft. Only add players who fit your league's rules (e.g. actual backup QBs). Preseason points (from Sleeper) fill in automatically for each player below." : "Only the commissioner can manage the player pool."}</div>
       ${unlocked ? `
       <div class="row">
         <div class="field"><label>Name</label><input type="text" id="pName" placeholder="Jacoby Brissett"></div>
@@ -1851,58 +1853,6 @@ function renderDraft(){
         }
         await loadPlayers();
         renderDraft();
-      };
-
-      const preseasonPanel = document.createElement('div');
-      preseasonPanel.className='panel';
-      const defaultSeason = (new Date().getMonth()>=6) ? new Date().getFullYear() : new Date().getFullYear()-1;
-      preseasonPanel.innerHTML = `
-        <h2>Preseason Stats</h2>
-        <div class="sub">Pull each pool player's preseason box scores from Sleeper (weeks 1-3) using your Scoring Weights, so everyone can see who's been playing well before the draft.</div>
-        <div class="row" style="align-items:flex-end;">
-          <div class="field" style="max-width:110px;"><label>Season</label><input type="number" id="preseasonSeason" value="${defaultSeason}"></div>
-          <div class="field" style="max-width:260px;"><button class="btn ghost" id="preseasonFetchBtn" style="width:100%;">Update Preseason Stats from Sleeper</button></div>
-        </div>
-        <div id="preseasonStatus" style="font-size:12px; color:var(--muted);"></div>
-      `;
-      area.appendChild(preseasonPanel);
-      preseasonPanel.querySelector('#preseasonFetchBtn').onclick = async ()=>{
-        const statusEl = preseasonPanel.querySelector('#preseasonStatus');
-        if(players.length===0){ statusEl.textContent = 'Add players to the pool first.'; return; }
-        const season = preseasonPanel.querySelector('#preseasonSeason').value;
-        statusEl.textContent = 'Loading Sleeper player database…';
-        try{
-          await ensureSleeperPlayers();
-          const perPlayer = {};
-          players.forEach(p=>{ perPlayer[p.id] = { weeks:{}, sid: findSleeperId(p.name, p.pos) }; });
-          for(const wk of ['1','2','3']){
-            statusEl.textContent = 'Fetching preseason week '+wk+' stats…';
-            const res = await fetch(`https://api.sleeper.app/v1/stats/nfl/pre/${season}/${wk}`);
-            if(!res.ok) continue;
-            const statsData = await res.json();
-            players.forEach(p=>{
-              const sid = perPlayer[p.id].sid;
-              if(!sid) return;
-              const s = statsData[sid];
-              if(!s) return;
-              perPlayer[p.id].weeks[wk] = computePoints(s);
-            });
-          }
-          const updates = players.map(p=>{
-            const weeks = perPlayer[p.id].weeks;
-            const playedWeeks = Object.keys(weeks).sort((a,b)=>Number(a)-Number(b));
-            const seasonTotal = playedWeeks.reduce((sum,wk)=>sum+weeks[wk], 0);
-            const lastWeek = playedWeeks[playedWeeks.length-1] || null;
-            return { id:p.id, preseason_prev_week: lastWeek, preseason_prev_week_points: lastWeek?weeks[lastWeek]:0, preseason_season_points: seasonTotal };
-          });
-          await Promise.all(updates.map(u=>sb.from('players').update({ preseason_prev_week:u.preseason_prev_week, preseason_prev_week_points:u.preseason_prev_week_points, preseason_season_points:u.preseason_season_points }).eq('id', u.id)));
-          await loadPlayers();
-          renderDraft();
-          const newStatusEl = document.getElementById('preseasonStatus');
-          if(newStatusEl) newStatusEl.textContent = 'Preseason stats updated.';
-        }catch(err){
-          statusEl.textContent = 'Update failed (' + err.message + '). Try again.';
-        }
       };
     }
 
@@ -2345,6 +2295,53 @@ function computePoints(s){
   pts += (s.pass_td_40||0) * weights.pass_td_40;
   pts += (s.pass_fd||0) * weights.pass_fd;
   return Math.round(pts*100)/100;
+}
+
+// Auto-fetches preseason box scores from Sleeper for the player pool, so
+// eligible players' points fill in on their own — no manual button. Only
+// the commissioner's browser can write players.*, and this is throttled
+// so it isn't re-fetched on every render.
+const preseasonFetchState = { lastFetchedAt: 0, inProgress: false };
+async function autoFetchPreseasonStatsIfNeeded(){
+  if(!unlocked || league.draftStarted || players.length===0) return;
+  if(preseasonFetchState.inProgress) return;
+  if(Date.now() - preseasonFetchState.lastFetchedAt < 30*60*1000) return;
+  preseasonFetchState.inProgress = true;
+  try{
+    const season = (new Date().getMonth()>=6) ? new Date().getFullYear() : new Date().getFullYear()-1;
+    await ensureSleeperPlayers();
+    const perPlayer = {};
+    players.forEach(p=>{ perPlayer[p.id] = { weeks:{}, sid: findSleeperId(p.name, p.pos) }; });
+    for(const wk of ['1','2','3']){
+      const res = await fetch(`https://api.sleeper.app/v1/stats/nfl/pre/${season}/${wk}`);
+      if(!res.ok) continue;
+      const statsData = await res.json();
+      players.forEach(p=>{
+        const sid = perPlayer[p.id].sid;
+        if(!sid) return;
+        const s = statsData[sid];
+        if(!s) return;
+        perPlayer[p.id].weeks[wk] = computePoints(s);
+      });
+    }
+    const updates = players.filter(p=>perPlayer[p.id].sid).map(p=>{
+      const weeks = perPlayer[p.id].weeks;
+      const playedWeeks = Object.keys(weeks).sort((a,b)=>Number(a)-Number(b));
+      const seasonTotal = playedWeeks.reduce((sum,wk)=>sum+weeks[wk], 0);
+      const lastWeek = playedWeeks[playedWeeks.length-1] || null;
+      return { id:p.id, preseason_prev_week: lastWeek, preseason_prev_week_points: lastWeek?weeks[lastWeek]:0, preseason_season_points: seasonTotal };
+    });
+    if(updates.length){
+      await Promise.all(updates.map(u=>sb.from('players').update({ preseason_prev_week:u.preseason_prev_week, preseason_prev_week_points:u.preseason_prev_week_points, preseason_season_points:u.preseason_season_points }).eq('id', u.id)));
+      await loadPlayers();
+      if(!league.draftStarted) renderDraft();
+    }
+    preseasonFetchState.lastFetchedAt = Date.now();
+  }catch(e){
+    console.error('preseason auto-fetch failed', e);
+  }finally{
+    preseasonFetchState.inProgress = false;
+  }
 }
 
 // ---------- chat ----------
