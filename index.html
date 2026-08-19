@@ -463,8 +463,6 @@ let weights = {
 let sleeperPlayerCache = null; // {sleeperId: {name, pos, team}} loaded once per session
 let lineups = {};              // { week: { teamId: { slotId: playerId } } }
 
-const POS = ['QB','RB','WR','TE','DEF','K'];
-
 // Current Player-2 (primary backup QB) per team, per ourlads.com/nfldepthcharts/depthchartpos/QB
 const DEFAULT_BULK = `Kyle Allen, QB, BUF
 Quinn Ewers, QB, MIA
@@ -1809,19 +1807,7 @@ function renderDraft(){
     panel.className='panel';
     panel.innerHTML = `
       <h2>Player Pool</h2>
-      <div class="sub">${unlocked ? "Add eligible players before the draft. Only add players who fit your league's rules (e.g. actual backup QBs). Preseason points (from Sleeper) fill in automatically for each player below." : "Only the commissioner can manage the player pool."}</div>
-      ${unlocked ? `
-      <div class="row">
-        <div class="field"><label>Name</label><input type="text" id="pName" placeholder="Jacoby Brissett"></div>
-        <div class="field" style="max-width:110px;"><label>Position</label>
-          <select id="pPos">${POS.map(p=>`<option>${p}</option>`).join('')}</select>
-        </div>
-        <div class="field" style="max-width:130px;"><label>NFL Team</label><input type="text" id="pTeam" placeholder="NE"></div>
-        <div class="field" style="max-width:150px;"><label>&nbsp;</label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--chalk);"><input type="checkbox" id="pThird" style="width:auto;"> 3rd-string QB (1.5x)</label>
-        </div>
-      </div>
-      <button class="btn" id="addPlayer">Add Player</button>` : ''}
+      <div class="sub">${unlocked ? "Manage the eligible players below, or use Bulk Import to add more. Preseason points (from Sleeper) fill in automatically for each player below." : "Only the commissioner can manage the player pool."}</div>
       <div class="player-grid" id="poolGrid" style="margin-top:16px;"></div>
     `;
     area.appendChild(panel);
@@ -1872,21 +1858,6 @@ function renderDraft(){
     area.appendChild(orderPanel);
     updateClockDisplays();
 
-    if(unlocked){
-      document.getElementById('addPlayer').onclick = async ()=>{
-        const name = document.getElementById('pName').value.trim();
-        const pos = document.getElementById('pPos').value;
-        const nflTeam = document.getElementById('pTeam').value.trim();
-        const thirdString = document.getElementById('pThird').checked;
-        if(!name) return;
-        const { error } = await sb.from('players').insert({ league_id: LEAGUE_ID, name, pos, nfl_team:nflTeam, third_string:thirdString });
-        if(error){ alert(error.message); return; }
-        document.getElementById('pName').value=''; document.getElementById('pTeam').value='';
-        document.getElementById('pThird').checked=false;
-        await loadPlayers();
-        renderDraft();
-      };
-    }
     document.getElementById('startDraft').onclick = async ()=>{ await startDraftNow(); };
 
     const grid = document.getElementById('poolGrid');
