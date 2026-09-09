@@ -1444,6 +1444,32 @@ function preseasonStatsHtml(p){
   return `<div class="pmeta" style="margin-top:4px;font-size:11px;color:var(--muted);">Wk${p.preseasonPrevWeek?' '+esc(p.preseasonPrevWeek):''}: <strong style="color:var(--chalk);">${p.preseasonPrevWeekPoints.toFixed(1)}</strong> · Season Total: <strong style="color:var(--chalk);">${p.preseasonSeasonPoints.toFixed(1)}</strong></div>`;
 }
 
+// Shared position/team filter dropdowns for any "browse a player list" panel
+// (Player Pool, Available Players, My Team's Add a Player).
+function playerFilterRowHtml(idPrefix, list){
+  const positions = [...new Set(list.map(p=>p.pos))].sort();
+  const teams = [...new Set(list.map(p=>p.nflTeam).filter(Boolean))].sort();
+  return `<div class="row" style="margin-bottom:10px;">
+    <div class="field" style="max-width:160px;"><label>Position</label>
+      <select id="${idPrefix}PosFilter">
+        <option value="">All Positions</option>
+        ${positions.map(pos=>`<option value="${esc(pos)}">${esc(pos)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" style="max-width:160px;"><label>NFL Team</label>
+      <select id="${idPrefix}TeamFilter">
+        <option value="">All Teams</option>
+        ${teams.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+      </select>
+    </div>
+  </div>`;
+}
+function applyPlayerFilters(list, idPrefix){
+  const posVal = document.getElementById(idPrefix+'PosFilter')?.value || '';
+  const teamVal = document.getElementById(idPrefix+'TeamFilter')?.value || '';
+  return list.filter(p => (!posVal || p.pos===posVal) && (!teamVal || p.nflTeam===teamVal));
+}
+
 function avatarHtml(t, size){
   size = size || 32;
   if(t.avatarUrl){
@@ -1867,6 +1893,7 @@ function renderDraft(){
       <h2>Player Pool</h2>
       <div class="sub">Every eligible player (each team's backup QB, kicker, and all 32 defenses) is added automatically — no need to manage the pool by hand. Preseason points (from Sleeper) fill in automatically for each player below.</div>
       ${unlocked ? `<div class="sub" id="preseasonStatus" style="margin-top:2px;"></div>` : ''}
+      ${players.length ? playerFilterRowHtml('pool', players) : ''}
       <div class="player-grid" id="poolGrid" style="margin-top:16px;"></div>
     `;
     area.appendChild(panel);
@@ -1889,14 +1916,22 @@ function renderDraft(){
 
     document.getElementById('startDraft').onclick = async ()=>{ await startDraftNow(); };
 
-    const grid = document.getElementById('poolGrid');
-    if(players.length===0){ grid.innerHTML = '<div class="empty">No players added yet.</div>'; }
-    players.forEach(p=>{
-      const c = document.createElement('div');
-      c.className='player-card';
-      c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>${preseasonStatsHtml(p)}`;
-      grid.appendChild(c);
-    });
+    function renderPoolGrid(){
+      const grid = document.getElementById('poolGrid');
+      grid.innerHTML = '';
+      if(players.length===0){ grid.innerHTML = '<div class="empty">No players added yet.</div>'; return; }
+      const list = applyPlayerFilters(players, 'pool');
+      if(list.length===0){ grid.innerHTML = '<div class="empty">No players match those filters.</div>'; return; }
+      list.forEach(p=>{
+        const c = document.createElement('div');
+        c.className='player-card';
+        c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>${preseasonStatsHtml(p)}`;
+        grid.appendChild(c);
+      });
+    }
+    document.getElementById('poolPosFilter')?.addEventListener('change', renderPoolGrid);
+    document.getElementById('poolTeamFilter')?.addEventListener('change', renderPoolGrid);
+    renderPoolGrid();
     return;
   }
 
@@ -1948,22 +1983,32 @@ function renderDraft(){
   const panel = document.createElement('div');
   panel.className='panel';
   panel.innerHTML = `<h2>Available Players</h2><div class="sub">Click a player to draft them to the team on the clock.</div>
+    ${avail.length ? playerFilterRowHtml('avail', avail) : ''}
     <div class="player-grid" id="availGrid"></div>`;
   area.appendChild(panel);
-  const grid = panel.querySelector('#availGrid');
-  if(avail.length===0){ grid.innerHTML='<div class="empty">No players left in the pool.</div>'; }
-  avail.forEach(p=>{
-    const c = document.createElement('div');
-    c.className='player-card';
-    c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>${preseasonStatsHtml(p)}`;
-    if(!done && !league.draftPaused){
-      const b = document.createElement('button');
-      b.className='btn'; b.textContent='Draft';
-      b.onclick = async ()=>{ b.disabled = true; await commitPick(p.id); };
-      c.appendChild(b);
-    }
-    grid.appendChild(c);
-  });
+
+  function renderAvailGrid(){
+    const grid = panel.querySelector('#availGrid');
+    grid.innerHTML = '';
+    if(avail.length===0){ grid.innerHTML='<div class="empty">No players left in the pool.</div>'; return; }
+    const list = applyPlayerFilters(avail, 'avail');
+    if(list.length===0){ grid.innerHTML = '<div class="empty">No players match those filters.</div>'; return; }
+    list.forEach(p=>{
+      const c = document.createElement('div');
+      c.className='player-card';
+      c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>${preseasonStatsHtml(p)}`;
+      if(!done && !league.draftPaused){
+        const b = document.createElement('button');
+        b.className='btn'; b.textContent='Draft';
+        b.onclick = async ()=>{ b.disabled = true; await commitPick(p.id); };
+        c.appendChild(b);
+      }
+      grid.appendChild(c);
+    });
+  }
+  panel.querySelector('#availPosFilter')?.addEventListener('change', renderAvailGrid);
+  panel.querySelector('#availTeamFilter')?.addEventListener('change', renderAvailGrid);
+  renderAvailGrid();
 
   area.appendChild(buildBoardOrHistoryPanel(done));
 
@@ -2136,16 +2181,20 @@ function renderMyTeam(){
   // ---- Add a free-agent player (only once the draft is complete) ----
   const addPanel = document.createElement('div');
   addPanel.className = 'panel';
-  addPanel.innerHTML = `<h2>Add a Player</h2><div class="sub" id="myAddSub"></div><div class="player-grid" id="myAddGrid"></div>`;
+  const availForAdd = draftDone ? players.filter(p=>!draftedIds().has(p.id)) : [];
+  const addSubText = !draftDone
+    ? 'Adding players opens once the draft is complete — for now, manage your queue on the Draft tab.'
+    : (rosterIsFull ? 'Your roster is full — drop someone first to add a new player.' : 'Pick up any available player.');
+  addPanel.innerHTML = `<h2>Add a Player</h2><div class="sub" id="myAddSub">${addSubText}</div>${availForAdd.length ? playerFilterRowHtml('myAdd', availForAdd) : ''}<div class="player-grid" id="myAddGrid"></div>`;
   area.appendChild(addPanel);
-  const addSub = addPanel.querySelector('#myAddSub');
-  const addGrid = addPanel.querySelector('#myAddGrid');
-  if(!draftDone){
-    addSub.textContent = 'Adding players opens once the draft is complete — for now, manage your queue on the Draft tab.';
-  } else {
-    addSub.textContent = rosterIsFull ? 'Your roster is full — drop someone first to add a new player.' : 'Pick up any available player.';
-    const avail = players.filter(p=>!draftedIds().has(p.id));
-    if(avail.length===0){ addGrid.innerHTML = '<div class="empty">No available players in the pool.</div>'; }
+
+  function renderMyAddGrid(){
+    const addGrid = addPanel.querySelector('#myAddGrid');
+    addGrid.innerHTML = '';
+    if(!draftDone) return;
+    if(availForAdd.length===0){ addGrid.innerHTML = '<div class="empty">No available players in the pool.</div>'; return; }
+    const avail = applyPlayerFilters(availForAdd, 'myAdd');
+    if(avail.length===0){ addGrid.innerHTML = '<div class="empty">No players match those filters.</div>'; return; }
     avail.forEach(p=>{
       const c = document.createElement('div');
       c.className = 'player-card';
@@ -2164,6 +2213,9 @@ function renderMyTeam(){
       addGrid.appendChild(c);
     });
   }
+  addPanel.querySelector('#myAddPosFilter')?.addEventListener('change', renderMyAddGrid);
+  addPanel.querySelector('#myAddTeamFilter')?.addEventListener('change', renderMyAddGrid);
+  renderMyAddGrid();
 }
 
 // ---------- standings / scoring ----------
