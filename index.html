@@ -478,6 +478,7 @@ let league = { rules:'', teams:[], rosterSize:8, draftOrder:[], draftStarted:fal
   draftPaused:false, currentPickDeadline:null, pausedRemainingMs:null, commissioner_user_id:null, name:'', draftComplete:false };
 let players = []; // {id,name,pos,nflTeam,thirdString}
 let scores = {};  // { week: { playerId: points } }
+let ineligiblePlayers = {}; // { week: { playerId: true } } — became the real starting QB that week
 let chat = [];    // [{id,author,text,ts}]
 let queues = {};  // { teamId: [playerId, playerId, ...] } pre-rank order, index 0 = top priority
 let weights = {
@@ -725,7 +726,16 @@ async function loadQueuesData(){
 async function loadScoresData(){
   const { data } = await sb.from('scores').select('*').eq('league_id', LEAGUE_ID);
   scores = {};
-  (data||[]).forEach(s=>{ if(!scores[s.week]) scores[s.week]={}; scores[s.week][s.player_id] = Number(s.points)||0; });
+  ineligiblePlayers = {};
+  (data||[]).forEach(s=>{
+    if(!scores[s.week]) scores[s.week]={};
+    scores[s.week][s.player_id] = Number(s.points)||0;
+    if(s.ineligible){ if(!ineligiblePlayers[s.week]) ineligiblePlayers[s.week]={}; ineligiblePlayers[s.week][s.player_id] = true; }
+  });
+}
+function effectiveScore(wk, pid){
+  if(ineligiblePlayers[wk] && ineligiblePlayers[wk][pid]) return 0;
+  return (scores[wk] && scores[wk][pid]) || 0;
 }
 async function loadLineupsData(){
   const { data } = await sb.from('lineups').select('*').eq('league_id', LEAGUE_ID);
@@ -974,10 +984,13 @@ async function computeHomeStats(){
   if(!allScores || allScores.length===0) return null;
   const latestWeek = allScores.reduce((max,r)=> (parseInt(r.week)||0) > (parseInt(max)||0) ? r.week : max, allScores[0].week);
 
-  const [{ data: scoreRows }, { data: leagueRows }] = await Promise.all([
-    sb.from('scores').select('league_id,player_id,points').eq('week', latestWeek),
+  const [{ data: scoreRowsRaw }, { data: leagueRows }] = await Promise.all([
+    sb.from('scores').select('league_id,player_id,points,ineligible').eq('week', latestWeek),
     sb.from('leagues').select('id,name')
   ]);
+  // A player who became their real team's starting QB that week scores 0 regardless
+  // of points on record — only backups count.
+  const scoreRows = (scoreRowsRaw||[]).map(s=> s.ineligible ? { ...s, points: 0 } : s);
   const leagueIds = [...new Set((scoreRows||[]).map(s=>s.league_id))];
   const [{ data: playerRows }, { data: lineupRows }, { data: teamRows }] = await Promise.all([
     sb.from('players').select('id,league_id,name,pos,nfl_team,third_string').in('league_id', leagueIds.length?leagueIds:['__none__']),
@@ -1891,7 +1904,7 @@ function renderDraft(){
     panel.className='panel';
     panel.innerHTML = `
       <h2>Player Pool</h2>
-      <div class="sub">Every eligible player (each team's backup QB, kicker, and all 32 defenses) is added automatically — no need to manage the pool by hand. Preseason points (from Sleeper) fill in automatically for each player below.</div>
+      <div class="sub">Every eligible player (each team's backup QB, kicker, and all 32 defenses) is added automatically — no need to manage the pool by hand. Backup QB eligibility (QB2/QB3) is sourced from <a href="https://www.ourlads.com/nfldepthcharts/depthchartpos/QB" target="_blank" style="color:var(--gold-bright);">Ourlads' depth charts</a>, the official word on who's starting. Preseason points (from Sleeper) fill in automatically for each player below.</div>
       ${unlocked ? `<div class="sub" id="preseasonStatus" style="margin-top:2px;"></div>` : ''}
       ${players.length ? playerFilterRowHtml('pool', players) : ''}
       <div class="player-grid" id="poolGrid" style="margin-top:16px;"></div>
@@ -2228,7 +2241,7 @@ function renderStandings(){
   const defaultSeason = (new Date().getMonth()>=6) ? new Date().getFullYear() : new Date().getFullYear()-1;
   scorePanel.innerHTML = `
     <h2>Enter Weekly Scores</h2>
-    <div class="sub">Pick a week, enter fantasy points for each drafted player — or auto-fetch stats from Sleeper and let the site calculate points using your Scoring Weights.</div>
+    <div class="sub">Pick a week, enter fantasy points for each drafted player — or auto-fetch stats from Sleeper and let the site calculate points using your Scoring Weights. Check <a href="https://www.ourlads.com/nfldepthcharts/depthchartpos/QB" target="_blank" style="color:var(--gold-bright);">Ourlads' depth charts</a> each week — if a drafted backup became the actual starting QB, check the box next to their name below so they score 0 for that week instead of whatever points they put up.</div>
     <div class="row" style="align-items:flex-end;">
       <div class="field" style="max-width:110px;"><label>Season</label><input type="number" id="seasonNum" value="${defaultSeason}"></div>
       <div class="field" style="max-width:130px;"><label>Season Type</label>
@@ -2254,9 +2267,11 @@ function renderStandings(){
         const pl = players.find(x=>x.id===pk.playerId);
         if(!pl) return '';
         const val = (scores[wk] && scores[wk][pl.id]!==undefined) ? scores[wk][pl.id] : '';
+        const isIneligible = !!(ineligiblePlayers[wk] && ineligiblePlayers[wk][pl.id]);
         return `<div class="row" style="align-items:center;margin-top:6px;">
           <span style="flex:2;font-size:13px;"><span class="chip pos-${pl.pos}">${pl.pos}</span> ${esc(pl.name)}</span>
-          <input type="number" step="0.1" style="flex:1;max-width:90px;" data-player="${pl.id}" value="${val}" placeholder="pts">
+          <input type="number" step="0.1" style="flex:1;max-width:90px;" data-player="${pl.id}" value="${val}" placeholder="pts" ${isIneligible?'disabled':''}>
+          <label style="flex:2;display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);"><input type="checkbox" data-ineligible="${pl.id}" style="width:auto;" ${isIneligible?'checked':''}> Became starting QB (0 pts)</label>
         </div>`;
       }).join('') + `</div>`;
     }).join('');
@@ -2266,7 +2281,18 @@ function renderStandings(){
         const val = parseFloat(inp.value)||0;
         if(!scores[wk2]) scores[wk2] = {};
         scores[wk2][inp.dataset.player] = val;
-        await sb.from('scores').upsert({ league_id: LEAGUE_ID, week: wk2, player_id: inp.dataset.player, points: val });
+        await sb.from('scores').upsert({ league_id: LEAGUE_ID, week: wk2, player_id: inp.dataset.player, points: val }, { onConflict: 'league_id,week,player_id' });
+        renderTable();
+      });
+    });
+    entryDiv.querySelectorAll('input[data-ineligible]').forEach(cb=>{
+      cb.addEventListener('change', async ()=>{
+        const wk2 = weekInput.value;
+        const pid = cb.dataset.ineligible;
+        if(!ineligiblePlayers[wk2]) ineligiblePlayers[wk2] = {};
+        ineligiblePlayers[wk2][pid] = cb.checked;
+        await sb.from('scores').upsert({ league_id: LEAGUE_ID, week: wk2, player_id: pid, ineligible: cb.checked }, { onConflict: 'league_id,week,player_id' });
+        renderEntry();
         renderTable();
       });
     });
@@ -2302,7 +2328,7 @@ function renderStandings(){
       });
 
       const scoreRows = Object.keys(scores[wk]).map(pid=>({ league_id: LEAGUE_ID, week: wk, player_id: pid, points: scores[wk][pid] }));
-      if(scoreRows.length) await sb.from('scores').upsert(scoreRows);
+      if(scoreRows.length) await sb.from('scores').upsert(scoreRows, { onConflict: 'league_id,week,player_id' });
       statusEl.textContent = unmatched.length
         ? `Done, but couldn't match: ${unmatched.join(', ')} — enter those manually below.`
         : 'All players matched and scored.';
@@ -2390,7 +2416,7 @@ function renderStandings(){
     let sum = 0;
     Object.values(teamLineup).forEach(pid=>{
       if(!pid) return;
-      const raw = (scores[wk] && scores[wk][pid]) || 0;
+      const raw = effectiveScore(wk, pid);
       const pl = players.find(x=>x.id===pid);
       const mult = (pl && pl.thirdString) ? 1.5 : 1;
       sum += raw * mult;

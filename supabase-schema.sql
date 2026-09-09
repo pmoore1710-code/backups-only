@@ -127,8 +127,12 @@ create table if not exists scores (
   week text not null,
   player_id uuid references players(id) on delete cascade,
   points numeric default 0,
+  ineligible boolean default false,  -- became the real starting QB that week (per
+                                      -- Ourlads' depth charts) -> scores 0 regardless
+                                      -- of points on record, since only backups count.
   primary key (league_id, week, player_id)
 );
+alter table scores add column if not exists ineligible boolean default false;
 
 create table if not exists lineups (
   league_id text references leagues(id) on delete cascade,
