@@ -436,6 +436,7 @@ async function legacyHasData(){
 let session = null;         // Supabase Auth session, or null
 let appReady = false;       // true once the initial boot sequence has finished once
 let clockLoopStarted = false;
+let statsPollStarted = false;
 let LEAGUE_ID = null;       // league code from ?league=
 let leagueRow = null;       // raw `leagues` row
 let myTeam = null;          // the logged-in user's own team in this league, if any
@@ -738,6 +739,7 @@ async function enterLeague(){
   renderAll();
   subscribeRealtime();
   if(!clockLoopStarted){ setInterval(tickClock, 1000); clockLoopStarted = true; }
+  if(!statsPollStarted){ setInterval(autoFetchPreseasonStatsIfNeeded, STATS_POLL_INTERVAL_MS); statsPollStarted = true; }
   await ensurePlayerPoolSeeded();
   autoFetchPreseasonStatsIfNeeded();
 }
@@ -1408,7 +1410,7 @@ document.getElementById('addTeam').addEventListener('click', async ()=>{
 
 function preseasonStatsHtml(p){
   if(!p.preseasonPrevWeek && !p.preseasonSeasonPoints) return '';
-  return `<div class="pmeta" style="margin-top:4px;font-size:11px;color:var(--muted);">Prev Wk${p.preseasonPrevWeek?' '+esc(p.preseasonPrevWeek):''}: <strong style="color:var(--chalk);">${p.preseasonPrevWeekPoints.toFixed(1)}</strong> · Preseason Total: <strong style="color:var(--chalk);">${p.preseasonSeasonPoints.toFixed(1)}</strong></div>`;
+  return `<div class="pmeta" style="margin-top:4px;font-size:11px;color:var(--muted);">Wk${p.preseasonPrevWeek?' '+esc(p.preseasonPrevWeek):''}: <strong style="color:var(--chalk);">${p.preseasonPrevWeekPoints.toFixed(1)}</strong> · Season Total: <strong style="color:var(--chalk);">${p.preseasonSeasonPoints.toFixed(1)}</strong></div>`;
 }
 
 function avatarHtml(t, size){
@@ -2274,28 +2276,45 @@ async function ensurePlayerPoolSeeded(){
   }
 }
 
-// Auto-fetches preseason box scores from Sleeper for the player pool, so
-// eligible players' points fill in on their own — no manual button. Only
-// the commissioner's browser can write players.*, and this is throttled
-// so it isn't re-fetched on every render.
+// Auto-fetches box scores from Sleeper for the player pool, so eligible
+// players' points fill in and stay current on their own — no manual
+// button. Always follows Sleeper's real current season/week (whatever
+// point in the year it is — preseason, regular season, etc.) rather than
+// a hardcoded window, so this keeps working as the season progresses.
+// Only the commissioner's browser can write players.*, and this is
+// throttled (and re-run on a timer while their tab stays open) so it
+// stays fresh during game windows without hammering Sleeper's API.
 const preseasonFetchState = { lastFetchedAt: 0, inProgress: false };
+const STATS_POLL_INTERVAL_MS = 7*60*1000;
 function setPreseasonStatus(msg){
   const el = document.getElementById('preseasonStatus');
   if(el) el.textContent = msg;
 }
+async function fetchSleeperState(){
+  const res = await fetch('https://api.sleeper.app/v1/state/nfl');
+  if(!res.ok) throw new Error('Sleeper state request failed');
+  return await res.json(); // { season, season_type, week, ... }
+}
 async function autoFetchPreseasonStatsIfNeeded(){
   if(!unlocked || league.draftStarted || players.length===0) return;
   if(preseasonFetchState.inProgress) return;
-  if(Date.now() - preseasonFetchState.lastFetchedAt < 30*60*1000) return;
+  if(Date.now() - preseasonFetchState.lastFetchedAt < STATS_POLL_INTERVAL_MS) return;
   preseasonFetchState.inProgress = true;
-  setPreseasonStatus('Fetching preseason stats from Sleeper…');
+  setPreseasonStatus('Fetching player stats from Sleeper…');
   try{
-    const season = (new Date().getMonth()>=6) ? new Date().getFullYear() : new Date().getFullYear()-1;
+    const state = await fetchSleeperState();
+    const season = state.season;
+    const seasonType = state.season_type || 'regular'; // 'pre' | 'regular' | 'post'
+    const capWeek = seasonType === 'pre' ? 3 : 18;
+    const currentWeek = Math.min(Math.max(1, Number(state.week) || 1), capWeek);
+    const weeksToFetch = [];
+    for(let w=1; w<=currentWeek; w++) weeksToFetch.push(String(w));
+
     await ensureSleeperPlayers();
     const perPlayer = {};
     players.forEach(p=>{ perPlayer[p.id] = { weeks:{}, sid: findSleeperId(p.name, p.pos) }; });
-    for(const wk of ['1','2','3']){
-      const res = await fetch(`https://api.sleeper.app/v1/stats/nfl/pre/${season}/${wk}`);
+    for(const wk of weeksToFetch){
+      const res = await fetch(`https://api.sleeper.app/v1/stats/nfl/${seasonType}/${season}/${wk}`);
       if(!res.ok) continue;
       const statsData = await res.json();
       players.forEach(p=>{
@@ -2326,16 +2345,16 @@ async function autoFetchPreseasonStatsIfNeeded(){
     preseasonFetchState.lastFetchedAt = Date.now();
 
     if(writeError){
-      setPreseasonStatus("Couldn't save preseason stats (" + writeError.message + "). Make sure the database has the latest schema update.");
+      setPreseasonStatus("Couldn't save player stats (" + writeError.message + "). Make sure the database has the latest schema update.");
     } else if(matched.length===0){
       setPreseasonStatus("Couldn't match any pool players to Sleeper's player database.");
     } else if(playedCount===0){
-      setPreseasonStatus('Matched ' + matched.length + ' player(s), but no preseason stats are available for them yet.');
+      setPreseasonStatus('Matched ' + matched.length + ' player(s), but no stats are available for week ' + currentWeek + ' yet.');
     } else {
-      setPreseasonStatus('Preseason stats updated for ' + playedCount + ' of ' + matched.length + ' matched player(s).');
+      setPreseasonStatus('Stats updated for ' + playedCount + ' of ' + matched.length + ' matched player(s) (through week ' + currentWeek + ').');
     }
   }catch(e){
-    console.error('preseason auto-fetch failed', e);
+    console.error('player stats auto-fetch failed', e);
     setPreseasonStatus("Couldn't reach Sleeper (" + e.message + "). Will retry automatically.");
   }finally{
     preseasonFetchState.inProgress = false;
