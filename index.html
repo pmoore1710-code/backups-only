@@ -187,6 +187,7 @@
 
 <nav id="nav">
   <button data-tab="home" id="homeNavBtn">Home</button>
+  <button data-tab="myteam" id="myTeamNavBtn">My Team</button>
   <button data-tab="rules" class="active">Rules & Teams</button>
   <button data-tab="draft">Draft</button>
   <button data-tab="rosters">Rosters</button>
@@ -360,6 +361,11 @@
     </div>
   </section>
 
+  <!-- MY TEAM -->
+  <section class="tab" id="tab-myteam">
+    <div id="myTeamArea"></div>
+  </section>
+
   <!-- DRAFT -->
   <section class="tab" id="tab-draft">
     <div id="draftArea"></div>
@@ -446,7 +452,7 @@ let members = [];           // league_members rows (commissioner-only)
 // ---------- state ----------
 let league = { rules:'', teams:[], rosterSize:8, draftOrder:[], draftStarted:false, currentPick:0, picks:[], numQB:2, numDEF:1, numK:1, numSuperflex:1, benchSize:3,
   draftScheduledAt:null, draftType:'snake', pickTimeSeconds:90, draftOrderMethod:'random', manualOrder:[], autopickEnabled:true,
-  draftPaused:false, currentPickDeadline:null, pausedRemainingMs:null, commissioner_user_id:null, name:'' };
+  draftPaused:false, currentPickDeadline:null, pausedRemainingMs:null, commissioner_user_id:null, name:'', draftComplete:false };
 let players = []; // {id,name,pos,nflTeam,thirdString}
 let scores = {};  // { week: { playerId: points } }
 let chat = [];    // [{id,author,text,ts}]
@@ -659,6 +665,7 @@ function applyRuntimeRow(runtime){
   league.draftPaused = runtime.draft_paused || false;
   league.currentPickDeadline = runtime.current_pick_deadline ? new Date(runtime.current_pick_deadline).getTime() : null;
   league.pausedRemainingMs = runtime.paused_remaining_ms ?? null;
+  league.draftComplete = runtime.draft_complete || false;
 }
 
 async function loadLeague(){
@@ -1183,6 +1190,7 @@ function renderAll(){
   renderTeams();
   renderDraftSettings();
   renderDraft();
+  renderMyTeam();
   renderRosters();
   renderStandings();
   renderChat();
@@ -1599,12 +1607,13 @@ async function commitPick(playerId, opts={}){
   await loadPicks();
   const doneNow = league.picks.length >= totalPicks;
   const newDeadline = (!doneNow && league.pickTimeSeconds) ? new Date(Date.now()+league.pickTimeSeconds*1000).toISOString() : null;
-  await sb.from('draft_runtime').update({ current_pick_deadline:newDeadline, paused_remaining_ms:null }).eq('league_id', LEAGUE_ID);
+  await sb.from('draft_runtime').update({ current_pick_deadline:newDeadline, paused_remaining_ms:null, draft_complete:doneNow }).eq('league_id', LEAGUE_ID);
   league.currentPickDeadline = newDeadline ? new Date(newDeadline).getTime() : null;
   league.pausedRemainingMs = null;
+  league.draftComplete = doneNow;
   await sb.from('queues').delete().eq('player_id', playerId);
   Object.keys(queues).forEach(tid=>{ if(queues[tid]) queues[tid] = queues[tid].filter(id=>id!==playerId); });
-  renderDraft(); renderRosters(); renderStandings();
+  renderDraft(); renderMyTeam(); renderRosters(); renderStandings();
   return true;
 }
 
@@ -1942,9 +1951,9 @@ function renderDraft(){
   resetPanel.querySelector('#resetDraft').onclick = async ()=>{
     if(!unlocked) return;
     await sb.from('picks').delete().eq('league_id', LEAGUE_ID);
-    await sb.from('draft_runtime').update({ draft_started:false, draft_paused:false, current_pick_deadline:null, paused_remaining_ms:null }).eq('league_id', LEAGUE_ID);
+    await sb.from('draft_runtime').update({ draft_started:false, draft_paused:false, current_pick_deadline:null, paused_remaining_ms:null, draft_complete:false }).eq('league_id', LEAGUE_ID);
     await loadAllLeagueData();
-    renderDraft(); renderRosters(); renderStandings();
+    renderDraft(); renderMyTeam(); renderRosters(); renderStandings();
   };
 }
 
@@ -1974,6 +1983,164 @@ function renderRosters(){
     card.innerHTML = body;
     area.appendChild(card);
   });
+}
+
+function myTeamPlayerCardHtml(p, opts={}){
+  return `<div class="pname">${esc(p.name)}${opts.starting?' <span class="chip" style="border-color:var(--gold);color:var(--gold-bright);">STARTING</span>':''}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>${preseasonStatsHtml(p)}`;
+}
+
+function renderMyTeam(){
+  const area = document.getElementById('myTeamArea');
+  area.innerHTML = '';
+
+  if(!session){
+    area.innerHTML = `<div class="panel"><h2>My Team</h2><div class="sub">Log in on the Rules &amp; Teams tab to see your team.</div></div>`;
+    return;
+  }
+  if(!myTeam){
+    area.innerHTML = `<div class="panel"><h2>My Team</h2><div class="sub">You don't have a team in this league yet. ${unlocked ? 'As commissioner, add yourself a team on the Rules & Teams tab.' : "Ask your commissioner to invite you, or join from the Rules & Teams tab."}</div></div>`;
+    return;
+  }
+
+  const header = document.createElement('div');
+  header.className = 'panel';
+  header.innerHTML = `<h2 style="display:flex;align-items:center;gap:10px;">${avatarHtml(myTeam,40)}${esc(myTeam.name)}</h2><div class="sub">Owner: ${esc(myTeam.owner||'')}</div>`;
+  area.appendChild(header);
+
+  const myPicks = league.picks.filter(p=>p.teamId===myTeam.id);
+  const rosterPlayers = myPicks.map(pk=>players.find(x=>x.id===pk.playerId)).filter(Boolean);
+  const draftDone = !!league.draftComplete;
+  const rosterIsFull = myPicks.length >= league.rosterSize;
+
+  // ---- Starting lineup ----
+  const lineupPanel = document.createElement('div');
+  lineupPanel.className='panel';
+  lineupPanel.innerHTML = `
+    <h2>Starting Lineup</h2>
+    <div class="sub">Set who starts for the week below (${league.numQB||0} QB, ${league.numDEF||0} DEF, ${league.numK||0} K, ${league.numSuperflex||0} Superflex — Superflex accepts QB/DEF/K).</div>
+    <div class="field" style="max-width:110px;"><label>Week</label><input type="number" id="myTeamWeek" min="1" max="22" value="1"></div>
+    <div id="myTeamSlots"></div>
+    <button class="btn ghost" id="myTeamSaveLineup" style="margin-top:8px;">Save Lineup</button>
+    <div id="myTeamLineupMsg" style="font-size:12px; color:var(--muted); margin-top:6px;"></div>
+  `;
+  area.appendChild(lineupPanel);
+
+  const weekInput = lineupPanel.querySelector('#myTeamWeek');
+  function currentStartedIds(){
+    const wk = weekInput.value;
+    return new Set(Object.values((lineups[wk] && lineups[wk][myTeam.id]) ? lineups[wk][myTeam.id] : {}));
+  }
+  function renderSlots(){
+    const wk = weekInput.value;
+    const slotsDiv = lineupPanel.querySelector('#myTeamSlots');
+    const slots = buildSlots();
+    if(slots.length===0){ slotsDiv.innerHTML = '<div class="empty">No lineup slots configured yet — set them in Rules & Teams.</div>'; return; }
+    if(rosterPlayers.length===0){ slotsDiv.innerHTML = '<div class="empty">No players on your roster yet.</div>'; return; }
+    const saved = (lineups[wk] && lineups[wk][myTeam.id]) ? lineups[wk][myTeam.id] : {};
+    slotsDiv.innerHTML = slots.map(slot=>{
+      const eligible = rosterPlayers.filter(p=>slotEligible(slot.type, p.pos));
+      const current = saved[slot.id] || '';
+      return `<div class="row" style="align-items:center;margin-top:6px;">
+        <span style="flex:1;font-size:13px;"><span class="chip pos-${slot.type==='SUPERFLEX'?'QB':slot.type}">${slot.type==='SUPERFLEX'?'FLEX':slot.type}</span></span>
+        <select style="flex:2;" data-slot="${slot.id}">
+          <option value="">— empty —</option>
+          ${eligible.map(p=>`<option value="${p.id}" ${current===p.id?'selected':''}>${esc(p.name)} (${p.pos}${p.thirdString?' · 1.5x':''})</option>`).join('')}
+        </select>
+      </div>`;
+    }).join('');
+  }
+  weekInput.addEventListener('change', ()=>{ renderSlots(); renderRosterSection(); });
+  renderSlots();
+
+  lineupPanel.querySelector('#myTeamSaveLineup').addEventListener('click', async ()=>{
+    const wk = weekInput.value;
+    const selects = lineupPanel.querySelectorAll('#myTeamSlots select[data-slot]');
+    const entry = {};
+    const chosen = new Set();
+    let dup = false;
+    selects.forEach(sel=>{
+      if(sel.value){
+        if(chosen.has(sel.value)) dup = true;
+        chosen.add(sel.value);
+        entry[sel.dataset.slot] = sel.value;
+      }
+    });
+    const msgEl = lineupPanel.querySelector('#myTeamLineupMsg');
+    if(dup){ msgEl.style.color='var(--red)'; msgEl.textContent = "Same player can't start in two slots."; return; }
+    if(!lineups[wk]) lineups[wk] = {};
+    lineups[wk][myTeam.id] = entry;
+    await sb.from('lineups').delete().eq('league_id', LEAGUE_ID).eq('week', wk).eq('team_id', myTeam.id);
+    const rows = Object.keys(entry).map(slotId=>({ league_id: LEAGUE_ID, week: wk, team_id: myTeam.id, slot_id: slotId, player_id: entry[slotId] }));
+    if(rows.length) await sb.from('lineups').insert(rows);
+    msgEl.style.color='var(--green)'; msgEl.textContent = 'Lineup saved for week '+wk+'.';
+    renderRosterSection();
+    renderStandings();
+  });
+
+  // ---- Roster: starters + bench, with stats and Drop ----
+  const rosterPanel = document.createElement('div');
+  rosterPanel.className = 'panel';
+  rosterPanel.innerHTML = `<h2>Your Roster</h2><div class="sub" id="myRosterSub"></div><div class="player-grid" id="myRosterGrid"></div>`;
+  area.appendChild(rosterPanel);
+
+  function renderRosterSection(){
+    rosterPanel.querySelector('#myRosterSub').textContent = `${myPicks.length} of ${league.rosterSize} roster spots filled.`;
+    const grid = rosterPanel.querySelector('#myRosterGrid');
+    grid.innerHTML = '';
+    if(rosterPlayers.length===0){ grid.innerHTML = '<div class="empty">No players on your roster yet.</div>'; return; }
+    const startedIds = currentStartedIds();
+    rosterPlayers.forEach(p=>{
+      const c = document.createElement('div');
+      c.className = 'player-card';
+      c.innerHTML = myTeamPlayerCardHtml(p, { starting: startedIds.has(p.id) });
+      if(draftDone){
+        const dropBtn = document.createElement('button');
+        dropBtn.className = 'btn danger'; dropBtn.textContent = 'Drop';
+        dropBtn.onclick = async ()=>{
+          if(!confirm(`Drop ${p.name}? They'll go back into the available player pool.`)) return;
+          const { error } = await sb.from('picks').delete().eq('league_id', LEAGUE_ID).eq('team_id', myTeam.id).eq('player_id', p.id);
+          if(error){ alert(error.message); return; }
+          await loadPicks();
+          renderMyTeam(); renderRosters(); renderStandings(); renderDraft();
+        };
+        c.appendChild(dropBtn);
+      }
+      grid.appendChild(c);
+    });
+  }
+  renderRosterSection();
+
+  // ---- Add a free-agent player (only once the draft is complete) ----
+  const addPanel = document.createElement('div');
+  addPanel.className = 'panel';
+  addPanel.innerHTML = `<h2>Add a Player</h2><div class="sub" id="myAddSub"></div><div class="player-grid" id="myAddGrid"></div>`;
+  area.appendChild(addPanel);
+  const addSub = addPanel.querySelector('#myAddSub');
+  const addGrid = addPanel.querySelector('#myAddGrid');
+  if(!draftDone){
+    addSub.textContent = 'Adding players opens once the draft is complete — for now, manage your queue on the Draft tab.';
+  } else {
+    addSub.textContent = rosterIsFull ? 'Your roster is full — drop someone first to add a new player.' : 'Pick up any available player.';
+    const avail = players.filter(p=>!draftedIds().has(p.id));
+    if(avail.length===0){ addGrid.innerHTML = '<div class="empty">No available players in the pool.</div>'; }
+    avail.forEach(p=>{
+      const c = document.createElement('div');
+      c.className = 'player-card';
+      c.innerHTML = myTeamPlayerCardHtml(p);
+      const addBtn = document.createElement('button');
+      addBtn.className = 'btn'; addBtn.textContent = 'Add';
+      addBtn.disabled = rosterIsFull;
+      addBtn.onclick = async ()=>{
+        const nextPick = Math.max(0, ...league.picks.map(x=>x.pick)) + 1;
+        const { error } = await sb.from('picks').insert({ league_id: LEAGUE_ID, team_id: myTeam.id, player_id: p.id, pick_number: nextPick, auto:false });
+        if(error){ alert(error.message); return; }
+        await loadPicks();
+        renderMyTeam(); renderRosters(); renderStandings(); renderDraft();
+      };
+      c.appendChild(addBtn);
+      addGrid.appendChild(c);
+    });
+  }
 }
 
 // ---------- standings / scoring ----------

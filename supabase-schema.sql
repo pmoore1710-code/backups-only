@@ -66,8 +66,15 @@ create table if not exists draft_runtime (
   draft_order jsonb default '[]'::jsonb,    -- team ids in pick order
   draft_paused boolean default false,
   current_pick_deadline timestamptz,
-  paused_remaining_ms bigint
+  paused_remaining_ms bigint,
+  draft_complete boolean default false      -- set once when the draft finishes; only
+                                             -- Reset Draft clears it back to false. A
+                                             -- one-time historical fact, not recomputed
+                                             -- from the live pick count (which drops and
+                                             -- free-agent adds move up and down after the
+                                             -- draft is over).
 );
+alter table draft_runtime add column if not exists draft_complete boolean default false;
 
 create table if not exists teams (
   id uuid primary key default gen_random_uuid(),
@@ -244,18 +251,38 @@ create policy "players delete" on players for delete using (
   exists (select 1 from leagues l where l.id = players.league_id and l.commissioner_user_id = auth.uid())
 );
 
--- picks: public read; making a pick stays open to anyone in the room, same as the
--- existing draft room (the spec's ownership rules only lock down team name + queue,
--- not who's allowed to click "Draft"). A trigger below still guards that a pick's
--- team/player actually belong to its own league. Only the commissioner can delete
--- (used by Reset Draft).
+-- True once a league's live draft has run its course. Reads the one-time
+-- draft_runtime.draft_complete flag rather than recomputing from the current
+-- pick count — a live recompute would flip back to "not complete" the
+-- moment anyone drops a player after the draft (free-agent adds/drops move
+-- the pick count up and down long after the draft itself is over).
+create or replace function league_draft_complete(p_league_id text) returns boolean as $$
+  select coalesce((select draft_complete from draft_runtime where league_id = p_league_id), false)
+$$ language sql stable;
+
+-- picks: public read. Making a pick stays open to anyone in the room while the
+-- draft is still in progress, same as the original draft room (no ownership
+-- check needed to click "Draft" for whoever's on the clock, and autopick can
+-- fire from any connected browser). Once the draft is complete, only the
+-- commissioner or the team's own owner can add (free-agent pickup) or drop a
+-- player — that's a real roster move, not part of the shared draft-room honor
+-- system. A trigger below still guards that a pick's team/player actually
+-- belong to its own league.
 drop policy if exists "picks select" on picks;
 create policy "picks select" on picks for select using (true);
 drop policy if exists "picks insert" on picks;
-create policy "picks insert" on picks for insert with check (true);
+create policy "picks insert" on picks for insert with check (
+  not league_draft_complete(picks.league_id)
+  or exists (select 1 from leagues l where l.id = picks.league_id and l.commissioner_user_id = auth.uid())
+  or exists (select 1 from teams t where t.id = picks.team_id and t.owner_user_id = auth.uid())
+);
 drop policy if exists "picks delete" on picks;
 create policy "picks delete" on picks for delete using (
   exists (select 1 from leagues l where l.id = picks.league_id and l.commissioner_user_id = auth.uid())
+  or (
+    league_draft_complete(picks.league_id)
+    and exists (select 1 from teams t where t.id = picks.team_id and t.owner_user_id = auth.uid())
+  )
 );
 
 -- queues: public read (so autopick and spectators can see them); only the owning
