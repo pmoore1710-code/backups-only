@@ -166,6 +166,29 @@
   .pw-toggle{position:absolute; right:4px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:16px; padding:6px; line-height:1; color:var(--muted); border-radius:4px;}
   .pw-toggle:hover{color:var(--chalk);}
   .pw-toggle.active{color:var(--gold-bright);}
+
+  .mccarthy-overlay{
+    position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center;
+    pointer-events:none; animation: mccarthyFlash .4s steps(1) infinite alternate;
+  }
+  @keyframes mccarthyFlash{ 0%{ background:#4F2683; } 100%{ background:#FFC62F; } }
+  .mccarthy-text{ text-align:center; padding:20px; }
+  .mccarthy-number{
+    font-family:'Baloo 2',sans-serif; font-weight:800; font-size:clamp(120px,30vw,280px); line-height:.9;
+    color:#FFFFFF; text-shadow:0 0 30px rgba(0,0,0,.5), 0 8px 0 rgba(0,0,0,.25);
+  }
+  .mccarthy-line{
+    font-family:'Baloo 2',sans-serif; font-weight:700; font-size:clamp(20px,4vw,36px); letter-spacing:.05em;
+    color:#FFFFFF; text-shadow:0 4px 10px rgba(0,0,0,.4); margin-top:8px;
+  }
+  .mccarthy-team{
+    font-family:'Baloo 2',sans-serif; font-weight:800; text-transform:uppercase; font-size:clamp(28px,6vw,54px);
+    color:#FFFFFF; text-shadow:0 4px 12px rgba(0,0,0,.5); margin-top:4px;
+  }
+  .mccarthy-sub{
+    font-family:'IBM Plex Mono',monospace; font-size:13px; letter-spacing:.2em; text-transform:uppercase;
+    color:rgba(255,255,255,.85); margin-top:14px;
+  }
 </style>
 </head>
 <body class="field-lines">
@@ -2650,7 +2673,8 @@ async function handleRealtimeChange(table, payload){
       await loadPlayers(); renderDraft(); renderRosters(); renderStandings();
       break;
     case 'picks':
-      await loadPicks(); renderDraft(); renderRosters(); renderStandings();
+      if(payload.eventType === 'INSERT' && payload.new) checkMcCarthyCelebration(payload.new);
+      await loadPicks(); renderDraft(); renderMyTeam(); renderRosters(); renderStandings();
       break;
     case 'queues':
       await loadQueuesData(); renderDraft();
@@ -2665,6 +2689,36 @@ async function handleRealtimeChange(table, payload){
       await loadChatData(); renderChat();
       break;
   }
+}
+
+// A little league tradition: whenever JJ McCarthy lands on a roster (drafted or
+// picked up as a free agent), flash everyone's screen. This fires from the
+// realtime handler above, so it reaches every connected browser — including
+// whoever just made the pick — the same way the rest of the draft room's live
+// feedback already works.
+function checkMcCarthyCelebration(pickRow){
+  const pl = players.find(p=>p.id===pickRow.player_id);
+  if(!pl || normName(pl.name) !== 'jj mccarthy') return;
+  const team = league.teams.find(t=>t.id===pickRow.team_id);
+  showMcCarthyCelebration(team ? team.name : 'Someone');
+}
+
+function showMcCarthyCelebration(teamName){
+  const old = document.getElementById('mccarthyOverlay');
+  if(old) old.remove();
+  const el = document.createElement('div');
+  el.id = 'mccarthyOverlay';
+  el.className = 'mccarthy-overlay';
+  el.innerHTML = `
+    <div class="mccarthy-text">
+      <div class="mccarthy-number">9</div>
+      <div class="mccarthy-line">HAS BEEN DRAFTED BY</div>
+      <div class="mccarthy-team">${esc(teamName)}</div>
+      <div class="mccarthy-sub">JJ McCarthy</div>
+    </div>
+  `;
+  document.body.appendChild(el);
+  setTimeout(()=>{ el.remove(); }, 10000);
 }
 
 if(SUPABASE_URL.includes('YOUR_SUPABASE') || SUPABASE_ANON_KEY.includes('YOUR_SUPABASE')){
