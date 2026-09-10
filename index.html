@@ -653,6 +653,12 @@ function updateUnlocked(){
 function recomputeMyTeam(){
   myTeam = (session && league.teams) ? (league.teams.find(t=>t.ownerUserId===session.user.id) || null) : null;
 }
+// Only a team's own owner, or the commissioner (for placeholder teams / overrides),
+// can make a manual pick on that team's behalf — autopick-on-timeout is separate
+// and still allowed to fire from any connected browser.
+function canActForTeam(teamId){
+  return !!(unlocked || (myTeam && myTeam.id===teamId));
+}
 function needsFirstLoginSetup(){
   if(!session || unlocked) return false;
   return !myTeam;
@@ -1651,13 +1657,25 @@ async function commitPick(playerId, opts={}){
   const pickNumber = league.picks.length + 1;
   const teamOnClock = league.teams.find(t=>t.id===teamAtPick(league.picks.length));
   if(!teamOnClock) return false;
+  // Manual picks (not autopick-on-timeout) are only allowed for the on-the-clock
+  // team's own owner or the commissioner — checked here too, not just in the UI,
+  // since RLS will reject anyone else's insert anyway; this just avoids a wasted
+  // round-trip and gives a clearer message than a generic error would.
+  if(!opts.auto && !canActForTeam(teamOnClock.id)){
+    alert(`Only ${teamOnClock.name} (or the commissioner) can make this pick.`);
+    return false;
+  }
   const { error } = await sb.from('picks').insert({
     league_id: LEAGUE_ID, team_id: teamOnClock.id, player_id: playerId, pick_number: pickNumber, auto: !!opts.auto
   });
   if(error){
-    // a unique-constraint hit means someone else made this pick (or drafted this
-    // player) first — reload the real state instead of trusting our stale guess.
-    await loadPicks(); renderDraft(); renderRosters(); renderStandings();
+    if(error.code === '23505'){
+      // unique-constraint hit: someone else made this pick (or drafted this
+      // player) first — reload the real state instead of trusting our stale guess.
+      await loadPicks(); renderDraft(); renderMyTeam(); renderRosters(); renderStandings();
+    } else if(!opts.auto){
+      alert(`Only ${teamOnClock.name} (or the commissioner) can make this pick.`);
+    }
     return false;
   }
   await loadPicks();
@@ -1813,6 +1831,7 @@ function buildQueuePanel(){
       if(!league.draftStarted || league.draftPaused){ msg.textContent = 'Draft is not currently live.'; return; }
       const teamOnClockId = teamAtPick(league.currentPick);
       if(teamId !== teamOnClockId){ msg.textContent = "It's not this team's pick right now."; return; }
+      if(!canActForTeam(teamOnClockId)){ msg.textContent = "Only that team's owner (or the commissioner) can make this pick."; return; }
       const drafted = draftedIds();
       const top = (queues[teamId]||[]).find(pid=>!drafted.has(pid));
       if(!top){ msg.textContent = 'No available players in this queue.'; return; }
@@ -1987,9 +2006,10 @@ function renderDraft(){
   }
 
   const avail = players.filter(p=>!draftedIds().has(p.id));
+  const myTurn = !done && teamOnClock && canActForTeam(teamOnClock.id);
   const panel = document.createElement('div');
   panel.className='panel';
-  panel.innerHTML = `<h2>Available Players</h2><div class="sub">Click a player to draft them to the team on the clock.</div>
+  panel.innerHTML = `<h2>Available Players</h2><div class="sub">${myTurn ? 'Click a player to draft them to the team on the clock.' : `Waiting for ${esc(teamOnClock?teamOnClock.name:'the next team')} to pick — only they (or the commissioner) can draft right now.`}</div>
     ${avail.length ? playerFilterRowHtml('avail', avail) : ''}
     <div class="player-grid" id="availGrid"></div>`;
   area.appendChild(panel);
@@ -2004,7 +2024,7 @@ function renderDraft(){
       const c = document.createElement('div');
       c.className='player-card';
       c.innerHTML = `<div class="pname">${esc(p.name)}</div><div class="pmeta"><span class="chip pos-${p.pos}">${p.pos}</span> ${esc(p.nflTeam||'')} ${p.thirdString?'<span class="chip" style="border-color:var(--gold-accent);color:var(--gold-accent);">3RD · 1.5x</span>':''}</div>${preseasonStatsHtml(p)}`;
-      if(!done && !league.draftPaused){
+      if(!done && !league.draftPaused && myTurn){
         const b = document.createElement('button');
         b.className='btn'; b.textContent='Draft';
         b.onclick = async ()=>{ b.disabled = true; await commitPick(p.id); };

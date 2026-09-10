@@ -264,19 +264,30 @@ create or replace function league_draft_complete(p_league_id text) returns boole
   select coalesce((select draft_complete from draft_runtime where league_id = p_league_id), false)
 $$ language sql stable;
 
--- picks: public read. Making a pick stays open to anyone in the room while the
--- draft is still in progress, same as the original draft room (no ownership
--- check needed to click "Draft" for whoever's on the clock, and autopick can
--- fire from any connected browser). Once the draft is complete, only the
--- commissioner or the team's own owner can add (free-agent pickup) or drop a
--- player — that's a real roster move, not part of the shared draft-room honor
--- system. A trigger below still guards that a pick's team/player actually
--- belong to its own league.
+-- picks: public read. A manual pick is only allowed for the pick's own team
+-- owner or the commissioner (covers placeholder teams and corrections) — a
+-- league ran into real teams drafting for each other when this was left wide
+-- open. The one exception is an autopick-on-timeout row (auto = true): those
+-- have to stay open to any connected browser, since there's no server process
+-- driving the clock — whichever client notices a deadline has genuinely
+-- passed (checked against draft_runtime.current_pick_deadline, not just the
+-- client's say-so) fires it, regardless of which team it's for. Once the
+-- draft is complete, only the commissioner or the team's own owner can add
+-- (free-agent pickup) or drop a player — a trigger below still guards that a
+-- pick's team/player actually belong to its own league.
 drop policy if exists "picks select" on picks;
 create policy "picks select" on picks for select using (true);
 drop policy if exists "picks insert" on picks;
 create policy "picks insert" on picks for insert with check (
-  not league_draft_complete(picks.league_id)
+  (
+    picks.auto
+    and exists (
+      select 1 from draft_runtime dr
+      where dr.league_id = picks.league_id
+        and dr.current_pick_deadline is not null
+        and dr.current_pick_deadline < now()
+    )
+  )
   or exists (select 1 from leagues l where l.id = picks.league_id and l.commissioner_user_id = auth.uid())
   or exists (select 1 from teams t where t.id = picks.team_id and t.owner_user_id = auth.uid())
 );
